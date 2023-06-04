@@ -2,7 +2,7 @@ Install human-eval: https://github.com/openai/human-eval
 
 Install llama: https://github.com/facebookresearch/llama
 
-Model checkpoint location is hardcoded to: '/share/models/llama_model/llama/' for now 
+Model checkpoint location is hardcoded to: `/share/models/llama_model/llama/` for now 
 
 Run following command 
 ```
