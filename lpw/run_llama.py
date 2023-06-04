@@ -79,40 +79,24 @@ def main(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size
     )
 
-    prompts = [
-        # For these prompts, the expected answer is the natural continuation of the prompt
-        "I believe the meaning of life is",
-        "Simply put, the theory of relativity states that ",
-        "Building a website can be done in 10 simple steps:\n",
-        # Few shot prompts: https://huggingface.co/blog/few-shot-learning-gpt-neo-and-inference-api
-        """Tweet: "I hate it when my phone battery dies."
-Sentiment: Negative
-###
-Tweet: "My day has been 👍"
-Sentiment: Positive
-###
-Tweet: "This is the link to the article"
-Sentiment: Neutral
-###
-Tweet: "This new music video was incredibile"
-Sentiment:""",
-        """Translate English to French:
+    from human_eval.data import write_jsonl, read_problems
 
-sea otter => loutre de mer
+    problems = read_problems()
 
-peppermint => menthe poivrée
-
-plush girafe => girafe peluche
-
-cheese =>""",
+    # Currently sampling only once for each input
+    num_samples_per_task = 1
+    samples = [
+        dict(task_id=task_id, completion=generator.generate(
+        [problems[task_id]["prompt"]], max_gen_len=256, temperature=temperature, top_p=top_p))
+        for task_id in list(problems.keys())[:5]
+        for _ in range(num_samples_per_task)
     ]
-    results = generator.generate(
-        prompts, max_gen_len=256, temperature=temperature, top_p=top_p
-    )
 
-    for result in results:
-        print(result)
-        print("\n==================================\n")
+    res_dir = 'results/'
+    if not os.path.exists(res_dir):
+        os.makedirs(res_dir)
+
+    write_jsonl(res_dir+"samples.jsonl", samples)
 
 
 if __name__ == "__main__":
@@ -121,5 +105,5 @@ if __name__ == "__main__":
     model_size = '7B'
     ckpt_dir = llama_dir+model_size
     tokenizer_path = llama_dir+'tokenizer.model'
-    
+
     main(ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path)
