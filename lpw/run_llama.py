@@ -5,7 +5,6 @@ from typing import Tuple
 import os
 import sys
 import torch
-import fire
 import time
 import json
 
@@ -85,12 +84,19 @@ def main(
 
     # Currently sampling only once for each input
     num_samples_per_task = 1
+    num_tasks = len(problems.keys())
+    completions = []
+    task_ids = list(problems.keys())[:num_tasks]
+    prompts = [problems[task_id]["prompt"] for task_id in task_ids]
+
+    for i in range(num_tasks//max_batch_size+1):
+        completions += generator.generate(prompts[i*max_batch_size:(i+1)*max_batch_size], max_gen_len=256, temperature=temperature, top_p=top_p)
+
     samples = [
-        dict(task_id=task_id, completion=generator.generate(
-        [problems[task_id]["prompt"]], max_gen_len=256, temperature=temperature, top_p=top_p))
-        for task_id in list(problems.keys())[:5]
+        dict(task_id=task_id, completion=completions[i])
+        for i, task_id in enumerate(task_ids)
         for _ in range(num_samples_per_task)
-    ]
+        ]
 
     res_dir = 'results/'
     if not os.path.exists(res_dir):
