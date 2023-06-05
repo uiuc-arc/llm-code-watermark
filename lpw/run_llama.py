@@ -7,11 +7,11 @@ import sys
 import torch
 import time
 import json
+import fire
 
 from pathlib import Path
-
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
-
+from human_eval.evaluation import evaluate_functional_correctness
 from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 
 
@@ -62,13 +62,15 @@ def load(
     return generator
 
 
-def main(
+def evaluate_llama(
     ckpt_dir: str,
     tokenizer_path: str,
+    result_dir: str,
     temperature: float = 0.8,
     top_p: float = 0.95,
     max_seq_len: int = 512,
     max_batch_size: int = 32,
+    num_samples_per_task: int = 1,
 ):
     local_rank, world_size = setup_model_parallel()
     if local_rank > 0:
@@ -83,33 +85,46 @@ def main(
     problems = read_problems()
 
     # Currently sampling only once for each input
-    num_samples_per_task = 1
     num_tasks = len(problems.keys())
     completions = []
     task_ids = list(problems.keys())[:num_tasks]
     prompts = [problems[task_id]["prompt"] for task_id in task_ids]
 
-    for i in range(num_tasks//max_batch_size+1):
-        completions += generator.generate(prompts[i*max_batch_size:(i+1)*max_batch_size], max_gen_len=256, temperature=temperature, top_p=top_p)
+    for _ in range(num_samples_per_task):
+        cur_completions = []
+        for i in range(num_tasks//max_batch_size+1):
+            cur_completions += generator.generate(prompts[i*max_batch_size:(i+1)*max_batch_size], max_gen_len=256, temperature=temperature, top_p=top_p)
+        completions.append(cur_completions)
 
     samples = [
-        dict(task_id=task_id, completion=completions[i])
+        dict(task_id=task_id, completion=completions[sample_num][i])
         for i, task_id in enumerate(task_ids)
-        for _ in range(num_samples_per_task)
+        for sample_num in range(num_samples_per_task)
         ]
 
-    res_dir = 'results/'
-    if not os.path.exists(res_dir):
-        os.makedirs(res_dir)
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
 
-    write_jsonl(res_dir+"samples.jsonl", samples)
+    write_jsonl(result_dir+"samples.jsonl", samples)
+    results = evaluate_functional_correctness(result_dir+"samples.jsonl")
+    
+    # write results to file
+    print(results)
+    with open(result_dir+'results.txt', 'w') as f:
+        f.write(str(results))
 
-
-if __name__ == "__main__":
-    # torchrun --nproc_per_node MP example.py --ckpt_dir $TARGET_FOLDER/model_size --tokenizer_path $TARGET_FOLDER/tokenizer.model
+def main(
+        model_size='13B',
+        num_samples_per_task=1,
+        local_rank: int = 0,
+        ):
+    
     llama_dir = '/share/models/llama_model/llama/'
-    model_size = '7B'
     ckpt_dir = llama_dir+model_size
     tokenizer_path = llama_dir+'tokenizer.model'
+    result_dir = 'results/' + model_size + '_' + str(num_samples_per_task) + '/'
 
-    main(ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path)
+    evaluate_llama(ckpt_dir=ckpt_dir, tokenizer_path=tokenizer_path, result_dir=result_dir, num_samples_per_task=num_samples_per_task)
+
+if __name__ == "__main__":
+    fire.Fire(main)
