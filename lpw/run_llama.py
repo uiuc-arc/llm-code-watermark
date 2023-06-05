@@ -13,7 +13,7 @@ from pathlib import Path
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 from human_eval.evaluation import evaluate_functional_correctness
 from llama import ModelArgs, Transformer, Tokenizer, LLaMA
-
+from human_eval.data import write_jsonl, read_problems
 
 def setup_model_parallel() -> Tuple[int, int]:
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -79,8 +79,6 @@ def evaluate_llama(
     generator = load(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size
     )
-
-    from human_eval.data import write_jsonl, read_problems
 
     problems = read_problems()
 
