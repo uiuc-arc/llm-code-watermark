@@ -338,7 +338,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default="facebook/opt-1.3b",
+        default="/share/models/llama_model/hf/13B/",
         help="Main model, path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
@@ -356,7 +356,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default="c4",
+        default="humaneval",
         help="The name of the dataset to use (via the datasets library).",
     )
     parser.add_argument(

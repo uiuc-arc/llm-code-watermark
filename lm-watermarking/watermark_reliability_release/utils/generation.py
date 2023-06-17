@@ -101,7 +101,17 @@ def add_idx(example, idx):
 def load_hf_dataset(args):
     dataset_name, dataset_config_name = args.dataset_name, args.dataset_config_name
 
-    if dataset_name == "lfqa":
+    if dataset_name == "humaneval":
+        dataset = load_dataset("openai_humaneval")
+        args.__dict__.update(
+            {
+                "truncate_input_for_prompt": False,
+                "input_col_name": "prompt",
+                "ref_output_col_name": "canonical_solution",
+            }
+        )
+    
+    elif dataset_name == "lfqa":
         dataset = load_lfqa(args)
         args.__dict__.update(
             {
