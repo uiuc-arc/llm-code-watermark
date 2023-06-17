@@ -63,9 +63,17 @@ def parse_args():
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default="facebook/opt-6.7b ",
+        default="/share/models/llama_model/hf/",
         help="Main model, path to pretrained model or model identifier from huggingface.co/models.",
     )
+
+    parser.add_argument(
+        "--model_size",
+        type= int,
+        default= 13,
+        help="size of llama model",
+    )
+
     parser.add_argument(
         "--prompt_max_length",
         type=int,
@@ -173,7 +181,8 @@ def parse_args():
 
 def load_model(args):
     """Load and return the model and tokenizer"""
-
+    if "llama" in args.model_name_or_path:
+        args.model_name_or_path = args.model_name_or_path + str(args.model_size) + 'B/'
     args.is_seq2seq_model = any([(model_type in args.model_name_or_path) for model_type in ["t5","T0"]])
     args.is_decoder_only_model = any([(model_type in args.model_name_or_path) for model_type in ["gpt","opt","bloom", "llama"]])
     if args.is_seq2seq_model:
