@@ -3,12 +3,16 @@ from human_eval.data import write_jsonl, read_problems
 from human_eval.evaluation import evaluate_functional_correctness
 import os
 from pprint import pprint
-
+import torch
+from fairscale.nn.model_parallel.initialize import initialize_model_parallel
+from accelerate import Accelerator
 
 
 def main(args, result_dir, num_samples_per_task = 1): 
     """Run a command line version of the generation and detection operations
         and optionally launch and serve the gradio demo"""
+    
+    # accelerator = Accelerator()
     # Initial arg processing and log
     args.normalizers = (args.normalizers.split(",") if args.normalizers else [])
     print(args)
@@ -17,7 +21,9 @@ def main(args, result_dir, num_samples_per_task = 1):
         model, tokenizer, device = load_model(args)
     else:
         model, tokenizer, device = None, None, None
-
+    
+    # model = accelerator.prepare(model)
+    # device = accelerator.device
     # Generate and detect, report to stdout
     if not args.skip_model_load:
         
@@ -56,10 +62,12 @@ def main(args, result_dir, num_samples_per_task = 1):
                                                     device=device, 
                                                     tokenizer=tokenizer)
             
-            decoded_output_without_watermark_lst.append(decoded_output_without_watermark)
-            decoded_output_with_watermark_lst.append(decoded_output_with_watermark)
+            decoded_output_without_watermark_lst.append(f"{prompt} {decoded_output_without_watermark}")
+            decoded_output_with_watermark_lst.append(f"{prompt} {decoded_output_with_watermark}")
             with_watermark_detection_result_lst.append(with_watermark_detection_result)
             without_watermark_detection_result_lst.append(without_watermark_detection_result)
+
+
 
             print("#"*term_width)
             print("Output without watermark:")
@@ -76,27 +84,19 @@ def main(args, result_dir, num_samples_per_task = 1):
             print(f"Detection result @ {args.detection_z_threshold}:")
             pprint(with_watermark_detection_result)
             print("-"*term_width)
-
-
-    # Launch the app to generate and detect interactively (implements the hf space demo)
-    if args.run_gradio:
-        run_gradio(args, model=model, tokenizer=tokenizer, device=device)
-
+            
 
     watermarked_samples = [
-        dict(task_id=task_id, completion= decoded_output_with_watermark_lst[sample_num][i])
+        dict(task_id=task_id, completion= decoded_output_with_watermark_lst[i])
         for i, task_id in enumerate(task_ids)
-        for sample_num in range(num_samples_per_task)
         ]
     
     without_watermark_samples = [
-        dict(task_id=task_id, completion= decoded_output_without_watermark_lst[sample_num][i])
+        dict(task_id=task_id, completion= decoded_output_without_watermark_lst[i])
         for i, task_id in enumerate(task_ids)
-        for sample_num in range(num_samples_per_task)
         ]
     
 
-    
 
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
@@ -110,7 +110,7 @@ def main(args, result_dir, num_samples_per_task = 1):
     without_watermark_results = evaluate_functional_correctness(result_dir+"without_watermark_samples.jsonl")
 
 
-
+    
     
     # write results to file
     print('watermarked results:', watermarked_results)
@@ -121,6 +121,7 @@ def main(args, result_dir, num_samples_per_task = 1):
     print('without watermark results:', without_watermark_results)
     with open(result_dir+'without_watermark_results.txt', 'w') as f:
         f.write(str(without_watermark_results))
+    
     
     # write results to file
     print('watermarked detections:', with_watermark_detection_result_lst)
@@ -138,5 +139,15 @@ if __name__ == "__main__":
 
     args = parse_args()
     print(args)
-    result_dir = 'results/' + 'watermarking/' + args.model_size + '/'
+    result_dir = 'results/' + 'watermarking/' + str(args.model_size) + '/'
+
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    world_size = int(os.environ.get("WORLD_SIZE", -1))
+
+    torch.distributed.init_process_group("nccl")
+    initialize_model_parallel(world_size)
+    torch.cuda.set_device(local_rank)
+
+    # seed must be the same in all processes
+    torch.manual_seed(1)
     main(args, result_dir)
