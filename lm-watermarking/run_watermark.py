@@ -12,7 +12,7 @@ def main(args, result_dir, num_samples_per_task = 1):
     """Run a command line version of the generation and detection operations
         and optionally launch and serve the gradio demo"""
     
-    accelerator = Accelerator()
+    # accelerator = Accelerator()
     # Initial arg processing and log
     args.normalizers = (args.normalizers.split(",") if args.normalizers else [])
     print(args)
@@ -22,8 +22,8 @@ def main(args, result_dir, num_samples_per_task = 1):
     else:
         model, tokenizer, device = None, None, None
     
-    
-    accelerator = Accelerator().device
+    # model = accelerator.prepare(model)
+    # device = accelerator.device
     # Generate and detect, report to stdout
     if not args.skip_model_load:
         

@@ -31,7 +31,6 @@ from transformers import (AutoTokenizer,
                           LogitsProcessorList, LlamaForCausalLM, LlamaTokenizer,  LlamaTokenizerFast)
 
 from watermark_processor import WatermarkLogitsProcessor, WatermarkDetector
-from accelerate import init_empty_weights
 
 def str2bool(v):
     """Util function for user friendly boolean flag args"""
@@ -84,7 +83,7 @@ def parse_args():
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=200,
+        default=100,
         help="Maximmum number of new tokens to generate.",
     )
     parser.add_argument(
@@ -207,11 +206,9 @@ def load_model(args):
     model.eval()
 
     if "llama" in args.model_name_or_path:
-        with init_empty_weights():
-            tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path)
+        tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path)
     else:
-        with init_empty_weights():
-            tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
 
     return model, tokenizer, device
 
