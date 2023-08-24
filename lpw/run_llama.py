@@ -66,8 +66,8 @@ def evaluate_llama(
     ckpt_dir: str,
     tokenizer_path: str,
     result_dir: str,
-    temperature: float = 0.8,
-    top_p: float = 0.95,
+    temperature: float = 0.1, # good for pass@1
+    top_p: float = 0.9,
     max_seq_len: int = 512,
     max_batch_size: int = 32,
     num_samples_per_task: int = 1,
@@ -112,7 +112,7 @@ def evaluate_llama(
         f.write(str(results))
 
 def main(
-        model_size='13B',
+        model_size='7B',
         num_samples_per_task=1,
         local_rank: int = 0,
         ):

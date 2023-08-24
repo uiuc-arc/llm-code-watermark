@@ -196,7 +196,8 @@ def load_model(args):
         raise ValueError(f"Unknown model type: {args.model_name_or_path}")
 
     if args.use_gpu:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cuda:3" if torch.cuda.is_available() else "cpu"
+        torch.cuda.empty_cache()
         if args.load_fp16: 
             pass
         else: 
@@ -699,7 +700,6 @@ def main(args):
         pprint(with_watermark_detection_result)
         print("-"*term_width)
 
-
     # Launch the app to generate and detect interactively (implements the hf space demo)
     if args.run_gradio:
         run_gradio(args, model=model, tokenizer=tokenizer, device=device)
@@ -707,8 +707,6 @@ def main(args):
     return
 
 if __name__ == "__main__":
-
     args = parse_args()
     print(args)
-
     main(args)

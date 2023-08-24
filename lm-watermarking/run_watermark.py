@@ -7,6 +7,15 @@ import torch
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 from accelerate import Accelerator
 
+# reference: https://github.com/declare-lab/instruct-eval/blob/main/human_eval/main.py#L35
+def filter_code(completion: str) -> str:
+    # The program tends to overwrite, we only take the first function
+    completion = completion.lstrip("\n")
+    return completion.split("\n\n")[0]
+
+
+def fix_indents(text: str) -> str:
+    return text.replace("\t", "    ")
 
 def main(args, result_dir, num_samples_per_task = 1): 
     """Run a command line version of the generation and detection operations
@@ -53,6 +62,11 @@ def main(args, result_dir, num_samples_per_task = 1):
                                                                                                 model=model, 
                                                                                                 device=device, 
                                                                                                 tokenizer=tokenizer)
+            
+
+            decoded_output_without_watermark= filter_code(fix_indents(decoded_output_without_watermark))
+            decoded_output_with_watermark= filter_code(fix_indents(decoded_output_with_watermark))
+
             without_watermark_detection_result = detect(decoded_output_without_watermark, 
                                                         args, 
                                                         device=device, 
@@ -66,8 +80,6 @@ def main(args, result_dir, num_samples_per_task = 1):
             decoded_output_with_watermark_lst.append(f"{prompt} {decoded_output_with_watermark}")
             with_watermark_detection_result_lst.append(with_watermark_detection_result)
             without_watermark_detection_result_lst.append(without_watermark_detection_result)
-
-
 
             print("#"*term_width)
             print("Output without watermark:")
