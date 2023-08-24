@@ -11,7 +11,7 @@ from functools import cache
 
 import re
 import unicodedata
-import homoglyphs as hg
+import lmw.homoglyphs as hg
 
 
 def normalization_strategy_lookup(strategy_name: str) -> object:

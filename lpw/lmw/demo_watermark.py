@@ -30,7 +30,7 @@ from transformers import (AutoTokenizer,
                           AutoModelForCausalLM,
                           LogitsProcessorList, LlamaForCausalLM, LlamaTokenizer,  LlamaTokenizerFast)
 
-from watermark_processor import WatermarkLogitsProcessor, WatermarkDetector
+from lmw.watermark_processor import WatermarkLogitsProcessor, WatermarkDetector
 
 def str2bool(v):
     """Util function for user friendly boolean flag args"""

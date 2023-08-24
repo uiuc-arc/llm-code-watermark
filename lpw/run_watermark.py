@@ -1,11 +1,12 @@
-from demo_watermark import load_model, generate, detect, parse_args, run_gradio
+import torch
+import os
+
+from lmw.demo_watermark import load_model, generate, detect, parse_args
 from human_eval.data import write_jsonl, read_problems
 from human_eval.evaluation import evaluate_functional_correctness
-import os
 from pprint import pprint
-import torch
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
-from accelerate import Accelerator
+
 
 # reference: https://github.com/declare-lab/instruct-eval/blob/main/human_eval/main.py#L35
 def filter_code(completion: str) -> str:
@@ -17,11 +18,17 @@ def filter_code(completion: str) -> str:
 def fix_indents(text: str) -> str:
     return text.replace("\t", "    ")
 
+
+def get_value_from_tuple_list(lst, key):
+    for item in lst:
+        if item[0] == key:
+            return item[1]
+    return None
+
 def main(args, result_dir, num_samples_per_task = 1): 
     """Run a command line version of the generation and detection operations
         and optionally launch and serve the gradio demo"""
     
-    # accelerator = Accelerator()
     # Initial arg processing and log
     args.normalizers = (args.normalizers.split(",") if args.normalizers else [])
     print(args)
@@ -31,59 +38,72 @@ def main(args, result_dir, num_samples_per_task = 1):
     else:
         model, tokenizer, device = None, None, None
     
-    # model = accelerator.prepare(model)
-    # device = accelerator.device
+    watermarked_samples = []
+    nonwatermarked_samples = []
+
     # Generate and detect, report to stdout
     if not args.skip_model_load:
-        
-
         problems = read_problems()
 
         # Currently sampling only once for each input
         num_tasks = len(problems.keys())
         task_ids = list(problems.keys())[:num_tasks]
-        prompts = [problems[task_id]["prompt"] for task_id in task_ids]
-
 
         decoded_output_with_watermark_lst, decoded_output_without_watermark_lst, with_watermark_detection_result_lst, without_watermark_detection_result_lst = [], [], [], []
+        true_positive, false_positive = 0, 0
 
-
-        for prompt in prompts:
-
+        for task_id in task_ids:
+            prompt = problems[task_id]["prompt"]
             args.default_prompt = prompt
-
             term_width = 80
             print("#"*term_width)
             print("Prompt:")
             print(prompt)
 
-            _, _, decoded_output_without_watermark, decoded_output_with_watermark, _ = generate(prompt, 
-                                                                                                args, 
-                                                                                                model=model, 
-                                                                                                device=device, 
-                                                                                                tokenizer=tokenizer)
+            _, _, standard_output, watermarked_output, _ = generate(prompt, args, model=model, device=device, tokenizer=tokenizer)
             
+            watermarked_output= filter_code(fix_indents(watermarked_output))
+            standard_output= filter_code(fix_indents(standard_output))
 
-            decoded_output_without_watermark= filter_code(fix_indents(decoded_output_without_watermark))
-            decoded_output_with_watermark= filter_code(fix_indents(decoded_output_with_watermark))
-
-            without_watermark_detection_result = detect(decoded_output_without_watermark, 
-                                                        args, 
-                                                        device=device, 
-                                                        tokenizer=tokenizer)
-            with_watermark_detection_result = detect(decoded_output_with_watermark, 
+            # detect with watermark
+            with_watermark_detection_result = detect(watermarked_output, 
                                                     args, 
                                                     device=device, 
                                                     tokenizer=tokenizer)
             
-            decoded_output_without_watermark_lst.append(f"{prompt} {decoded_output_without_watermark}")
-            decoded_output_with_watermark_lst.append(f"{prompt} {decoded_output_with_watermark}")
+            watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
+            print('Watermarked_z_score:', watermarked_z_score)
+            if watermarked_z_score > args.detection_z_threshold:
+                true_positive += 1
+                print("True positive!")
+            else:
+                print("False negative!")
+            
+            # detect without watermark
+            without_watermark_detection_result = detect(standard_output, 
+                                                        args, 
+                                                        device=device, 
+                                                        tokenizer=tokenizer)
+            
+            nonwatermarked_z_score = float(get_value_from_tuple_list(without_watermark_detection_result[0], 'z-score'))
+            print('Nonwatermarked_z_score:', nonwatermarked_z_score)
+            if nonwatermarked_z_score > args.detection_z_threshold:
+                false_positive += 1
+                print("False positive!")
+            else:
+                print("True negative!")
+
+            watermarked_samples.append(dict(task_id=task_id, completion=f"{prompt} {watermarked_output}"))
+            nonwatermarked_samples.append(dict(task_id=task_id, completion=f"{prompt} {standard_output}"))
+
+            decoded_output_without_watermark_lst.append(f"{prompt} {watermarked_output}")
+            decoded_output_with_watermark_lst.append(f"{prompt} {standard_output}")
             with_watermark_detection_result_lst.append(with_watermark_detection_result)
             without_watermark_detection_result_lst.append(without_watermark_detection_result)
 
             print("#"*term_width)
             print("Output without watermark:")
-            print(decoded_output_without_watermark)
+            print(watermarked_output)
             print("-"*term_width)
             print(f"Detection result @ {args.detection_z_threshold}:")
             pprint(without_watermark_detection_result)
@@ -91,24 +111,11 @@ def main(args, result_dir, num_samples_per_task = 1):
 
             print("#"*term_width)
             print("Output with watermark:")
-            print(decoded_output_with_watermark)
+            print(standard_output)
             print("-"*term_width)
             print(f"Detection result @ {args.detection_z_threshold}:")
             pprint(with_watermark_detection_result)
             print("-"*term_width)
-            
-
-    watermarked_samples = [
-        dict(task_id=task_id, completion= decoded_output_with_watermark_lst[i])
-        for i, task_id in enumerate(task_ids)
-        ]
-    
-    without_watermark_samples = [
-        dict(task_id=task_id, completion= decoded_output_without_watermark_lst[i])
-        for i, task_id in enumerate(task_ids)
-        ]
-    
-
 
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
@@ -116,39 +123,37 @@ def main(args, result_dir, num_samples_per_task = 1):
     write_jsonl(result_dir+"watermarked_samples.jsonl", watermarked_samples)
     watermarked_results = evaluate_functional_correctness(result_dir+"watermarked_samples.jsonl")
 
-
-
-    write_jsonl(result_dir+"without_watermark_samples.jsonl", without_watermark_samples)
+    write_jsonl(result_dir+"without_watermark_samples.jsonl", nonwatermarked_samples)
     without_watermark_results = evaluate_functional_correctness(result_dir+"without_watermark_samples.jsonl")
-
-
-    
     
     # write results to file
-    print('watermarked results:', watermarked_results)
+    print('watermarked results:\n', watermarked_results)
     with open(result_dir+'watermarked_results.txt', 'w') as f:
         f.write(str(watermarked_results))
     
-
-    print('without watermark results:', without_watermark_results)
+    print('without watermark results:\n', without_watermark_results)
     with open(result_dir+'without_watermark_results.txt', 'w') as f:
         f.write(str(without_watermark_results))
     
-    
-    # write results to file
-    print('watermarked detections:', with_watermark_detection_result_lst)
-    with open(result_dir+'watermarked_detections.txt', 'w') as f:
-        f.writelines(with_watermark_detection_result_lst)
-    
+    print('True positives: ', true_positive, '/', len(task_ids))
+    print('False positives: ', false_positive, '/', len(task_ids))
 
-    print('without watermark detections:', without_watermark_detection_result_lst)
+    # write results to file
+    with open(result_dir+'watermarked_detections.txt', 'w') as f:
+        f.writelines(str(with_watermark_detection_result_lst))
+    
     with open(result_dir+'without_watermark_detections.txt', 'w') as f:
-        f.writelines(without_watermark_detection_result_lst)
+        f.writelines(str(without_watermark_detection_result_lst))
+
+    with open(result_dir+'true_positive_rate.txt', 'w') as f:
+        f.write(str(true_positive/len(task_ids)))
+
+    with open(result_dir+'false_positive_rate.txt', 'w') as f:
+        f.write(str(false_positive/len(task_ids)))
 
     return
 
 if __name__ == "__main__":
-
     args = parse_args()
     print(args)
     result_dir = 'results/' + 'watermarking/' + str(args.model_size) + '/'

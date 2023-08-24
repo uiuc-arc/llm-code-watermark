@@ -13,21 +13,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from __future__ import annotations
+
 import collections
-from math import sqrt
-
 import scipy.stats
-
 import torch
+
+from math import sqrt
 from torch import Tensor
 from tokenizers import Tokenizer
 from transformers import LogitsProcessor
-
 from nltk.util import ngrams
-
-from normalizers import normalization_strategy_lookup
+from lmw.normalizers import normalization_strategy_lookup
 
 class WatermarkBase:
     def __init__(
