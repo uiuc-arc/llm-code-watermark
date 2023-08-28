@@ -443,7 +443,7 @@ def t_identity(the_ast):
   return True, the_ast
 
 
-def perturb(og_code):
+def perturb(og_code, int_id = None, depth = 1, samples = 1):
     transforms = [
         (
         'transforms.Identity',
@@ -452,32 +452,33 @@ def perturb(og_code):
         )
     ]
 
-    DEPTH = 1
-    NUM_SAMPLES = 1
+    DEPTH = depth
+    NUM_SAMPLES = samples
 
     for s in range(NUM_SAMPLES):
       the_seq = []
       for _ in range(DEPTH):
-        rand_int = random.randint(1, 8)
-        if rand_int == 1:
+        if not int_id:
+          int_id = random.randint(1, 8)
+        if int_id == 1:
           the_seq.append(t_replace_true_false)
-        elif rand_int == 2:
+        elif int_id == 2:
           the_seq.append(t_rename_local_variables)
-        elif rand_int == 3:
+        elif int_id == 3:
           the_seq.append(t_rename_parameters)
-        elif rand_int == 4:
+        elif int_id == 4:
           the_seq.append(t_rename_fields)
-        elif rand_int == 5:
+        elif int_id == 5:
           the_seq.append(t_insert_print_statements)
-        elif rand_int == 6:
+        elif int_id == 6:
           the_seq.append(t_add_dead_code)
-        elif rand_int == 7:
+        elif int_id == 7:
           the_seq.append(t_unroll_whiles)
-        elif rand_int == 8:
+        elif int_id == 8:
           the_seq.append(t_wrap_try_catch)
     
       transforms.append(('depth-{}-sample-{}'.format(DEPTH, s+1), t_seq(the_seq), the_seq))
-
+      
     results = []
     for t_name, t_func, the_seq in transforms:
         try:
@@ -504,7 +505,6 @@ if __name__ == "__main__":
     for i in range(n):
         og_code = problems[keys[i]]['prompt'] + problems[keys[i]]['canonical_solution']
         res = perturb(og_code)
-        # print(res)
         print('original code:')
         print(og_code)
         print('perturbed code 1:' + str(res[0]['the_seq']))

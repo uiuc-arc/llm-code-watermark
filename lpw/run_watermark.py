@@ -50,6 +50,7 @@ def main(args, result_dir, num_samples_per_task = 1):
         task_ids = list(problems.keys())[:num_tasks]
 
         decoded_output_with_watermark_lst, decoded_output_without_watermark_lst, with_watermark_detection_result_lst, without_watermark_detection_result_lst = [], [], [], []
+        watermarked_completions, standard_completions = [], []
         true_positive, false_positive = 0, 0
 
         for task_id in task_ids:
@@ -64,6 +65,8 @@ def main(args, result_dir, num_samples_per_task = 1):
             
             watermarked_output= filter_code(fix_indents(watermarked_output))
             standard_output= filter_code(fix_indents(standard_output))
+            watermarked_completions.append(watermarked_output)
+            standard_completions.append(standard_output)
 
             # detect with watermark
             with_watermark_detection_result = detect(watermarked_output, 
@@ -150,13 +153,19 @@ def main(args, result_dir, num_samples_per_task = 1):
 
     with open(result_dir+'false_positive_rate.txt', 'w') as f:
         f.write(str(false_positive/len(task_ids)))
+    
+    with open(result_dir + 'watermarked_completions.txt', 'w') as f:
+        f.writelines(str(watermarked_completions))
+
+    with open(result_dir + 'standard_completions.txt', 'w') as f:
+        f.writelines(str(standard_completions))
 
     return
 
 if __name__ == "__main__":
     args = parse_args()
     print(args)
-    result_dir = 'results/' + 'watermarking/' + str(args.model_size) + '/'
+    result_dir = f'results/watermarking/{args.model_size}/'
 
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
     world_size = int(os.environ.get("WORLD_SIZE", -1))
