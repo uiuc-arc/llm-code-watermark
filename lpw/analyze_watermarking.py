@@ -37,14 +37,6 @@ def get_results_dataframe(result_dir):
     return df
 
 
-
-            
-
-
-
-
-
-
 def plot_tpr_fpr(df, result_dir):
 
     plot = df.plot(x="perturbation", y=["tpr", "fpr"], kind="bar")
@@ -55,10 +47,6 @@ def plot_tpr_fpr(df, result_dir):
 
     plt.savefig(f'{result_dir}/tpr_fpr_plot.png')
     plt.close('all')
-
-
-    
-
 
 
 if __name__ == "__main__":
