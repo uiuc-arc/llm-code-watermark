@@ -70,7 +70,7 @@ def parse_args():
     parser.add_argument(
         "--model_size",
         type= int,
-        default= 13,
+        default= 7,
         help="size of llama model",
     )
 
@@ -153,6 +153,12 @@ def parse_args():
         help="The test statistic threshold for the detection hypothesis test.",
     )
     parser.add_argument(
+        "--perturbation_ids",
+        type= str,
+        default= "2",
+        help="List of ids corresponding mapping to specific program perturbations",
+    )
+    parser.add_argument(
         "--select_green_tokens",
         type=str2bool,
         default=True,
@@ -178,6 +184,23 @@ def parse_args():
     )
     args = parser.parse_args()
     return args
+
+def load_tokenizer_device(args):
+    """Load tokenizer and device only"""
+    if args.use_gpu:
+        device = "cuda:3" if torch.cuda.is_available() else "cpu"
+        torch.cuda.empty_cache()
+    else:
+        device = "cpu"
+    
+    if "llama" in args.model_name_or_path:
+        args.model_name_or_path = args.model_name_or_path + str(args.model_size) + 'B/'
+        tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+
+    return tokenizer, device
+
 
 def load_model(args):
     """Load and return the model and tokenizer"""
