@@ -14,10 +14,7 @@ def main(args, result_dir):
 
     with open(result_dir + "original/watermarked_samples.jsonl_results.jsonl", 'r') as f:
         watermarked_samples = [json.loads(line) for line in f]
-    
-    
 
-    
     with open(result_dir + "original/without_watermark_samples.jsonl_results.jsonl", 'r') as f:
         nonwatermarked_samples = [json.loads(line) for line in f]
 
@@ -32,8 +29,6 @@ def main(args, result_dir):
     num_tasks = len(problems.keys())
     task_ids = list(problems.keys())[:num_tasks]
     term_width = 80
-    
-
 
     # Currently sampling only once for each input
 
@@ -49,7 +44,6 @@ def main(args, result_dir):
             print("Prompt:")
             print(prompt)
 
-            
             try:
                 watermarked_perturbation = perturb(watermarked_samples[i]['completion'], perturbation_id)[2]
                 watermarked_output = watermarked_perturbation['result']
@@ -74,8 +68,7 @@ def main(args, result_dir):
                                                         args, 
                                                         device=device, 
                                                         tokenizer=tokenizer)
-                
-            
+
             watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
             print('Watermarked_z_score:', watermarked_z_score)
             if watermarked_z_score > args.detection_z_threshold:
@@ -83,13 +76,8 @@ def main(args, result_dir):
                 print("True positive!")
             else:
                 print("False negative!")
-            
-
-            
+   
             idx = standard_output.index('"""', standard_output.index('"""') + 1) + 5 if '"""' in standard_output else standard_output.index("'''", standard_output.index("'''") + 1) + 5
-
-           
-
 
             without_watermark_detection_result = detect(standard_output[idx:-1], 
                                                         args, 
@@ -129,9 +117,7 @@ def main(args, result_dir):
             print(f"Detection result @ {args.detection_z_threshold}:")
             pprint(with_watermark_detection_result)
             print("-"*term_width)
-        
 
-        
         perturbed_result_dir = result_dir + re.search(r"<function\s+(.*?)\s+at", str(watermarked_perturbation['the_seq'][0])).group(1) + '/'
         if not os.path.exists(perturbed_result_dir):
             os.makedirs(perturbed_result_dir)
@@ -166,7 +152,6 @@ def main(args, result_dir):
 
         with open(perturbed_result_dir+'false_positive_rate.txt', 'w') as f:
             f.write(str(false_positive/len(task_ids)))
-                
 
 if __name__ == "__main__":
     args = parse_args()
