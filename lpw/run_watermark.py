@@ -23,7 +23,7 @@ def get_value_from_tuple_list(lst, key):
     for item in lst:
         if item[0] == key:
             return item[1]
-    return None
+    return 0
 
 def main(args, result_dir, num_samples_per_task = 1): 
     """Run a command line version of the generation and detection operations

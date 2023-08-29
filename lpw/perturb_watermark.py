@@ -49,22 +49,28 @@ def main(args, result_dir):
             print("Prompt:")
             print(prompt)
 
+            
             try:
                 watermarked_perturbation = perturb(watermarked_samples[i]['completion'], perturbation_id)[2]
                 watermarked_output = watermarked_perturbation['result']
+                if watermarked_output.endswith('"""\n') and watermarked_perturbation['changed'] == False:
+                    watermarked_output = watermarked_samples[i]['completion']
                 
             except Exception as error:
                 watermarked_output = watermarked_samples[i]['completion']
-
+     
             try:
                 standard_perturbation = perturb(nonwatermarked_samples[i]['completion'], perturbation_id)[2]
                 standard_output = standard_perturbation['result']
+                if standard_output.endswith('"""\n') and standard_perturbation['changed'] == False:
+                    standard_output = nonwatermarked_samples[i]['completion']
             
             except Exception as error:
                 standard_output = nonwatermarked_samples[i]['completion']
 
-            idx = watermarked_output.index('"""', watermarked_output.index('"""') + 1) + 1 if '"""' in watermarked_output else watermarked_output.index("'''", watermarked_output.index("'''") + 1) + 1
-            with_watermark_detection_result = detect(watermarked_output[idx:], 
+            idx = watermarked_output.index('"""', watermarked_output.index('"""') + 1) + 5 if '"""' in watermarked_output else watermarked_output.index("'''", watermarked_output.index("'''") + 1) + 5
+
+            with_watermark_detection_result = detect(watermarked_output[idx:-1], 
                                                         args, 
                                                         device=device, 
                                                         tokenizer=tokenizer)
@@ -78,12 +84,14 @@ def main(args, result_dir):
             else:
                 print("False negative!")
             
+
             
-            
-            # detect without watermark
-            
-            idx = standard_output.index('"""', standard_output.index('"""') + 1) + 1 if '"""' in standard_output else standard_output.index("'''", standard_output.index("'''") + 1) + 1
-            without_watermark_detection_result = detect(standard_output[idx:], 
+            idx = standard_output.index('"""', standard_output.index('"""') + 1) + 5 if '"""' in standard_output else standard_output.index("'''", standard_output.index("'''") + 1) + 5
+
+           
+
+
+            without_watermark_detection_result = detect(standard_output[idx:-1], 
                                                         args, 
                                                         device=device, 
                                                         tokenizer=tokenizer)
@@ -122,7 +130,7 @@ def main(args, result_dir):
             pprint(with_watermark_detection_result)
             print("-"*term_width)
         
-    
+
         
         perturbed_result_dir = result_dir + re.search(r"<function\s+(.*?)\s+at", str(watermarked_perturbation['the_seq'][0])).group(1) + '/'
         if not os.path.exists(perturbed_result_dir):

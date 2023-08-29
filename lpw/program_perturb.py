@@ -460,6 +460,8 @@ def perturb(og_code, int_id = None, depth = 1, samples = 1):
       for _ in range(DEPTH):
         if not int_id:
           int_id = random.randint(1, 8)
+        if int_id == 0:
+          the_seq.append(t_identity)
         if int_id == 1:
           the_seq.append(t_replace_true_false)
         elif int_id == 2:
