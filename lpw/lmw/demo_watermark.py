@@ -159,6 +159,12 @@ def parse_args():
         help="List of ids corresponding mapping to specific program perturbations",
     )
     parser.add_argument(
+        "--sweet_threshold",
+        type=float,
+        default=None,
+        help="The entropy threshold for SWEET algorithm https://arxiv.org/pdf/2305.15060.pdf.",
+    )
+    parser.add_argument(
         "--select_green_tokens",
         type=str2bool,
         default=True,
@@ -205,21 +211,21 @@ def load_tokenizer_device(args):
 def load_model(args):
     """Load and return the model and tokenizer"""
     if "llama" in args.model_name_or_path:
-        args.model_name_or_path = args.model_name_or_path + str(args.model_size) + 'B/'
-    args.is_seq2seq_model = any([(model_type in args.model_name_or_path) for model_type in ["t5","T0"]])
-    args.is_decoder_only_model = any([(model_type in args.model_name_or_path) for model_type in ["gpt","opt","bloom", "llama"]])
+        model_name_or_path = args.model_name_or_path + str(args.model_size) + 'B/'
+    args.is_seq2seq_model = any([(model_type in model_name_or_path) for model_type in ["t5","T0"]])
+    args.is_decoder_only_model = any([(model_type in model_name_or_path) for model_type in ["gpt","opt","bloom", "llama"]])
     if args.is_seq2seq_model:
-        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path)
     elif args.is_decoder_only_model:
         if args.load_fp16:
-            model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path,torch_dtype=torch.float16, device_map='auto')
+            model = AutoModelForCausalLM.from_pretrained(model_name_or_path,torch_dtype=torch.float16, device_map='auto')
         else:
-            model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+            model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
     else:
-        raise ValueError(f"Unknown model type: {args.model_name_or_path}")
+        raise ValueError(f"Unknown model type: {model_name_or_path}")
 
     if args.use_gpu:
-        device = "cuda:3" if torch.cuda.is_available() else "cpu"
+        device = "cuda:1" if torch.cuda.is_available() else "cpu"
         torch.cuda.empty_cache()
         if args.load_fp16: 
             pass
@@ -229,10 +235,10 @@ def load_model(args):
         device = "cpu"
     model.eval()
 
-    if "llama" in args.model_name_or_path:
-        tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path)
+    if "llama" in model_name_or_path:
+        tokenizer = LlamaTokenizer.from_pretrained(model_name_or_path)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 
     return model, tokenizer, device
 
@@ -247,7 +253,9 @@ def generate(prompt, args, model=None, device=None, tokenizer=None):
                                                     gamma=args.gamma,
                                                     delta=args.delta,
                                                     seeding_scheme=args.seeding_scheme,
-                                                    select_green_tokens=args.select_green_tokens)
+                                                    select_green_tokens=args.select_green_tokens,
+                                                    sweet_threshold=args.sweet_threshold,
+                                                    )
 
     gen_kwargs = dict(max_new_tokens=args.max_new_tokens)
 
@@ -337,9 +345,13 @@ def list_format_scores(score_dict, detection_threshold):
         lst_2d.insert(-1,["z-score Threshold", f"{detection_threshold}"])
     return lst_2d
 
-def detect(input_text, args, device=None, tokenizer=None):
+def detect(input_text, args, device=None, tokenizer=None, model=None):
     """Instantiate the WatermarkDetection object and call detect on
         the input text returning the scores and outcome of the test"""
+    
+    if args.sweet_threshold is not None and model is None:
+        model, _, _ = load_model(args)
+
     watermark_detector = WatermarkDetector(vocab=list(tokenizer.get_vocab().values()),
                                         gamma=args.gamma,
                                         seeding_scheme=args.seeding_scheme,
@@ -348,7 +360,11 @@ def detect(input_text, args, device=None, tokenizer=None):
                                         z_threshold=args.detection_z_threshold,
                                         normalizers=args.normalizers,
                                         ignore_repeated_bigrams=args.ignore_repeated_bigrams,
-                                        select_green_tokens=args.select_green_tokens)
+                                        select_green_tokens=args.select_green_tokens,
+                                        model=model,
+                                        prompt=args.default_prompt,
+                                        sweet_threshold=args.sweet_threshold)
+    
     if len(input_text)-1 > watermark_detector.min_prefix_len:
         score_dict = watermark_detector.detect(input_text)
         # output = str_format_scores(score_dict, watermark_detector.z_threshold)
@@ -362,7 +378,7 @@ def detect(input_text, args, device=None, tokenizer=None):
 def run_gradio(args, model=None, device=None, tokenizer=None):
     """Define and launch the gradio demo interface"""
     generate_partial = partial(generate, model=model, device=device, tokenizer=tokenizer)
-    detect_partial = partial(detect, device=device, tokenizer=tokenizer)
+    detect_partial = partial(detect, device=device, tokenizer=tokenizer, model=model)
 
     with gr.Blocks() as demo:
         # Top section, greeting and instructions
@@ -701,11 +717,13 @@ def main(args):
         without_watermark_detection_result = detect(decoded_output_without_watermark, 
                                                     args, 
                                                     device=device, 
-                                                    tokenizer=tokenizer)
+                                                    tokenizer=tokenizer,
+                                                    model=model)
         with_watermark_detection_result = detect(decoded_output_with_watermark, 
                                                  args, 
                                                  device=device, 
-                                                 tokenizer=tokenizer)
+                                                 tokenizer=tokenizer,
+                                                 model=model)
 
         print("#"*term_width)
         print("Output without watermark:")
