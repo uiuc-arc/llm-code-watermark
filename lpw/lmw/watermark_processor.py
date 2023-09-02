@@ -22,9 +22,11 @@ import torch
 from math import sqrt
 from torch import Tensor
 from tokenizers import Tokenizer
-from transformers import LogitsProcessor
+from transformers import LogitsProcessor, LogitsProcessorList
 from nltk.util import ngrams
 from lmw.normalizers import normalization_strategy_lookup
+from torch.distributions import Categorical
+
 
 class WatermarkBase:
     def __init__(
@@ -35,6 +37,7 @@ class WatermarkBase:
         seeding_scheme: str = "simple_1",  # mostly unused/always default
         hash_key: int = 15485863,  # just a large prime number to create a rng seed with sufficient bit width
         select_green_tokens: bool = True,
+        sweet_threshold: float = None,
     ):
 
         # watermarking parameters
@@ -46,6 +49,7 @@ class WatermarkBase:
         self.rng = None
         self.hash_key = hash_key
         self.select_green_tokens = select_green_tokens
+        self.sweet_threshold = sweet_threshold
 
     def _seed_rng(self, input_ids: torch.LongTensor, seeding_scheme: str = None) -> None:
         # can optionally override the seeding scheme,
@@ -98,6 +102,14 @@ class WatermarkLogitsProcessor(WatermarkBase, LogitsProcessor):
         if self.rng is None:
             self.rng = torch.Generator(device=input_ids.device)
 
+        if self.sweet_threshold is not None:
+            # Compute entropy of the logits
+            entropy = Categorical(probs = scores.softmax(-1)).entropy()
+
+            # If entropy is low, return the scores without biasing
+            if entropy < self.sweet_threshold:
+                return scores
+
         # NOTE, it would be nice to get rid of this batch loop, but currently,
         # the seed and partition operations are not tensor/vectorized, thus
         # each sequence in the batch needs to be treated separately.
@@ -122,6 +134,8 @@ class WatermarkDetector(WatermarkBase):
         z_threshold: float = 4.0,
         normalizers: list[str] = ["unicode"],  # or also: ["unicode", "homoglyphs", "truecase"]
         ignore_repeated_bigrams: bool = False,
+        model: torch.nn.Module = None,
+        prompt: str = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -146,6 +160,9 @@ class WatermarkDetector(WatermarkBase):
         self.ignore_repeated_bigrams = ignore_repeated_bigrams
         if self.ignore_repeated_bigrams: 
             assert self.seeding_scheme == "simple_1", "No repeated bigram credit variant assumes the single token seeding scheme."
+        
+        self.model = model
+        self.prompt = prompt
 
 
     def _compute_z_score(self, observed_count, T):
@@ -169,6 +186,7 @@ class WatermarkDetector(WatermarkBase):
         return_green_token_mask: bool = False,
         return_z_score: bool = True,
         return_p_value: bool = True,
+        text: str = None,
     ):
         if self.ignore_repeated_bigrams:
             # Method that only counts a green/red hit once per unique bigram.
@@ -186,6 +204,53 @@ class WatermarkDetector(WatermarkBase):
                 greenlist_ids = self._get_greenlist_ids(prefix)
                 bigram_table[bigram] = True if bigram[1] in greenlist_ids else False
             green_token_count = sum(bigram_table.values())
+        
+        elif self.sweet_threshold is not None:    
+            # Use SWEET algorithm detection https://arxiv.org/pdf/2305.15060.pdf 
+            # Only score tokens for which the entropy of the logits is high
+            tok_prompt = self.tokenizer.encode(self.prompt, return_tensors="pt", add_special_tokens=False).to(self.device)
+            tok_text = self.tokenizer.encode(text, return_tensors="pt", add_special_tokens=False).to(self.device)
+            tok_input = torch.cat((tok_prompt, tok_text), dim=1)
+            num_prompt_tokens = tok_prompt.shape[1]
+            green_token_count, green_token_mask, num_tokens_scored = 0, [], 0
+            num_new_tokens = len(input_ids)
+            entropy_collector = SWEETEntropyCollector()
+            output = self.model.generate(tok_prompt, 
+                                    logits_processor=LogitsProcessorList([entropy_collector]), 
+                                    max_new_tokens=num_new_tokens,
+                                    use_cache=True)
+
+            output_text = self.tokenizer.batch_decode(output, skip_special_tokens=False)
+            entropies = entropy_collector.entropy[:num_new_tokens+1]
+
+            for idx in range(self.min_prefix_len, len(input_ids)):
+                # tok_idx = num_prompt_tokens+idx
+                # cur_input = tok_input[:, :tok_idx]
+                # cur_output = self.model(cur_input, use_cache=True).logits
+                # entropy = Categorical(probs = cur_output[0][-1].softmax(-1)).entropy()
+                # print(entropy, entropies[idx])
+                if idx >= len(entropies):
+                    break
+
+                if entropies[idx] < self.sweet_threshold:
+                    continue
+                
+                num_tokens_scored += 1
+                curr_token = input_ids[idx]
+                greenlist_ids = self._get_greenlist_ids(input_ids[:idx])
+                if curr_token in greenlist_ids:
+                    green_token_count += 1
+                    green_token_mask.append(True)
+                else:
+                    green_token_mask.append(False)
+
+                # pred_token = self.tokenizer.batch_decode(torch.topk(cur_output, 5).indices[0][-1], skip_special_tokens=False)
+                # act_token = self.tokenizer.decode(curr_token, skip_special_tokens=False)
+                # print(idx, tok_idx, pred_token, act_token, entropy, curr_token in greenlist_ids)   
+                
+            if num_tokens_scored == 0:
+                # Hacky way to avoid division by zero
+                num_tokens_scored = 1         
         else:
             num_tokens_scored = len(input_ids) - self.min_prefix_len
             if num_tokens_scored < 1:
@@ -262,7 +327,7 @@ class WatermarkDetector(WatermarkBase):
 
         # call score method
         output_dict = {}
-        score_dict = self._score_sequence(tokenized_text, **kwargs)
+        score_dict = self._score_sequence(tokenized_text, text=text, **kwargs)
         if return_scores:
             output_dict.update(score_dict)
         # if passed return_prediction then perform the hypothesis test and return the outcome
@@ -275,3 +340,12 @@ class WatermarkDetector(WatermarkBase):
 
         return output_dict
 
+class SWEETEntropyCollector(LogitsProcessor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.entropy = []
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        entropy = Categorical(probs = scores.softmax(-1)).entropy()
+        self.entropy.append(entropy)
+        return scores
