@@ -22,7 +22,7 @@ import torch
 from math import sqrt
 from torch import Tensor
 from tokenizers import Tokenizer
-from transformers import LogitsProcessor
+from transformers import LogitsProcessor, LogitsProcessorList
 from nltk.util import ngrams
 from lmw.normalizers import normalization_strategy_lookup
 from torch.distributions import Categorical
@@ -213,14 +213,26 @@ class WatermarkDetector(WatermarkBase):
             tok_input = torch.cat((tok_prompt, tok_text), dim=1)
             num_prompt_tokens = tok_prompt.shape[1]
             green_token_count, green_token_mask, num_tokens_scored = 0, [], 0
+            num_new_tokens = len(input_ids)
+            entropy_collector = SWEETEntropyCollector()
+            output = self.model.generate(tok_prompt, 
+                                    logits_processor=LogitsProcessorList([entropy_collector]), 
+                                    max_new_tokens=num_new_tokens,
+                                    use_cache=True)
+
+            output_text = self.tokenizer.batch_decode(output, skip_special_tokens=False)
+            entropies = entropy_collector.entropy[:num_new_tokens+1]
 
             for idx in range(self.min_prefix_len, len(input_ids)):
-                tok_idx = num_prompt_tokens+idx
-                cur_input = tok_input[:, :tok_idx]
-                cur_output = self.model(cur_input).logits
-                entropy = Categorical(probs = cur_output[0][-1].softmax(-1)).entropy()
+                # tok_idx = num_prompt_tokens+idx
+                # cur_input = tok_input[:, :tok_idx]
+                # cur_output = self.model(cur_input, use_cache=True).logits
+                # entropy = Categorical(probs = cur_output[0][-1].softmax(-1)).entropy()
+                # print(entropy, entropies[idx])
+                if idx >= len(entropies):
+                    break
 
-                if entropy < self.sweet_threshold:
+                if entropies[idx] < self.sweet_threshold:
                     continue
                 
                 num_tokens_scored += 1
@@ -234,7 +246,11 @@ class WatermarkDetector(WatermarkBase):
 
                 # pred_token = self.tokenizer.batch_decode(torch.topk(cur_output, 5).indices[0][-1], skip_special_tokens=False)
                 # act_token = self.tokenizer.decode(curr_token, skip_special_tokens=False)
-                # print(idx, tok_idx, pred_token, act_token, entropy, curr_token in greenlist_ids)            
+                # print(idx, tok_idx, pred_token, act_token, entropy, curr_token in greenlist_ids)   
+                
+            if num_tokens_scored == 0:
+                # Hacky way to avoid division by zero
+                num_tokens_scored = 1         
         else:
             num_tokens_scored = len(input_ids) - self.min_prefix_len
             if num_tokens_scored < 1:
@@ -324,3 +340,12 @@ class WatermarkDetector(WatermarkBase):
 
         return output_dict
 
+class SWEETEntropyCollector(LogitsProcessor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.entropy = []
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        entropy = Categorical(probs = scores.softmax(-1)).entropy()
+        self.entropy.append(entropy)
+        return scores

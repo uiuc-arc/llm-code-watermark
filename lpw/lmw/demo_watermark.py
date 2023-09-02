@@ -225,7 +225,7 @@ def load_model(args):
         raise ValueError(f"Unknown model type: {model_name_or_path}")
 
     if args.use_gpu:
-        device = "cuda:1" if torch.cuda.is_available() else "cpu"
+        device = "cuda:3" if torch.cuda.is_available() else "cpu"
         torch.cuda.empty_cache()
         if args.load_fp16: 
             pass
