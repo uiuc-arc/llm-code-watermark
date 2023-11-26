@@ -1,5 +1,8 @@
 from lmw.demo_watermark import load_model, generate, detect, parse_args, load_tokenizer_device
-from program_perturb import perturb
+#from program_perturb import perturb
+import program_perturb_cst
+import program_perturb
+
 from human_eval.data import write_jsonl, read_problems
 import json
 import os
@@ -7,6 +10,10 @@ from run_watermark import get_value_from_tuple_list
 from human_eval.evaluation import evaluate_functional_correctness
 from pprint import pprint
 import re
+import libcst as cst
+import ast
+
+
 
 
 def main(args, result_dir):
@@ -32,10 +39,12 @@ def main(args, result_dir):
 
     # Currently sampling only once for each input
 
+
     for perturbation_id in list(map(int, args.perturbation_ids.split())):
         true_positive, false_positive = 0, 0
         decoded_output_with_watermark_lst, decoded_output_without_watermark_lst, with_watermark_detection_result_lst, without_watermark_detection_result_lst = [], [], [], []
         watermarked_perturbation, standard_perturbation = None, None
+        fraction_green = []
         
         for i, task_id in enumerate(task_ids):
             prompt = problems[task_id]["prompt"]
@@ -44,32 +53,49 @@ def main(args, result_dir):
             print("Prompt:")
             print(prompt)
 
+            used_cst_watermarked = False
+            used_cst_standard = False
+
+
             try:
-                watermarked_perturbation = perturb(watermarked_samples[i]['completion'], perturbation_id)[2]
+                watermarked_perturbation = program_perturb.perturb(watermarked_samples[i]['completion'], perturbation_id, 1)[2]
                 watermarked_output = watermarked_perturbation['result']
-                if watermarked_output.endswith('"""\n') and watermarked_perturbation['changed'] == False:
-                    watermarked_output = watermarked_samples[i]['completion']
+
+                if program_perturb_cst.find_comments_in_code(watermarked_samples[i]['completion']):   #watermarked_output.endswith('"""\n'):
+                    raise RuntimeError
+
                 
-            except Exception as error:
-                watermarked_output = watermarked_samples[i]['completion']
-     
+            except:
+                import pdb; pdb.set_trace()
+                watermarked_perturbation = program_perturb_cst.perturb(watermarked_samples[i]['completion'],  perturbation_id, depth= 1)[-1]
+                watermarked_output = watermarked_perturbation['result']
+                used_cst_watermarked = True
+
+
             try:
-                standard_perturbation = perturb(nonwatermarked_samples[i]['completion'], perturbation_id)[2]
+                standard_perturbation = program_perturb.perturb(nonwatermarked_samples[i]['completion'], perturbation_id, 1)[2]
                 standard_output = standard_perturbation['result']
-                if standard_output.endswith('"""\n') and standard_perturbation['changed'] == False:
-                    standard_output = nonwatermarked_samples[i]['completion']
+
+                if program_perturb_cst.find_comments_in_code(nonwatermarked_samples[i]['completion']): #standard_output.endswith('"""\n'):
+                    raise RuntimeError
             
-            except Exception as error:
-                standard_output = nonwatermarked_samples[i]['completion']
+            except:
+                standard_perturbation = program_perturb_cst.perturb(nonwatermarked_samples[i]['completion'],  perturbation_id, depth = 1)[-1]
+                standard_output = standard_perturbation['result']
+                used_cst_standard = True
+            
+                
 
             idx = watermarked_output.index('"""', watermarked_output.index('"""') + 1) + 5 if '"""' in watermarked_output else watermarked_output.index("'''", watermarked_output.index("'''") + 1) + 5
 
-            with_watermark_detection_result = detect(watermarked_output[idx:-1], 
-                                                        args, 
-                                                        device=device, 
-                                                        tokenizer=tokenizer)
+            
+            with_watermark_detection_result = detect(watermarked_output[idx:] if used_cst_watermarked else watermarked_output[idx:-1], args, device=device, tokenizer=tokenizer)
 
+            
             watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
+
+            fraction_green.append(float(get_value_from_tuple_list(with_watermark_detection_result[0], '# Tokens in Greenlist'))/ float(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)')))
+
             print('Watermarked_z_score:', watermarked_z_score)
             if watermarked_z_score > args.detection_z_threshold:
                 true_positive += 1
@@ -79,12 +105,13 @@ def main(args, result_dir):
    
             idx = standard_output.index('"""', standard_output.index('"""') + 1) + 5 if '"""' in standard_output else standard_output.index("'''", standard_output.index("'''") + 1) + 5
 
-            without_watermark_detection_result = detect(standard_output[idx:-1], 
+            without_watermark_detection_result = detect(standard_output[idx:] if used_cst_standard else standard_output[idx:-1], 
                                                         args, 
                                                         device=device, 
                                                         tokenizer=tokenizer)
             
             nonwatermarked_z_score = float(get_value_from_tuple_list(without_watermark_detection_result[0], 'z-score'))
+
             print('Nonwatermarked_z_score:', nonwatermarked_z_score)
             if nonwatermarked_z_score > args.detection_z_threshold:
                 false_positive += 1
@@ -139,6 +166,9 @@ def main(args, result_dir):
         
         print('True positives: ', true_positive, '/', len(task_ids))
         print('False positives: ', false_positive, '/', len(task_ids))
+
+
+        print('Mean Proportion in greenlist: ', sum(fraction_green)/len(task_ids) )
 
         # write results to file
         with open(perturbed_result_dir+'watermarked_detections.txt', 'w') as f:

@@ -32,6 +32,9 @@ from transformers import (AutoTokenizer,
 
 from lmw.watermark_processor import WatermarkLogitsProcessor, WatermarkDetector
 
+
+# from cfg.python_decoder import PythonDecoder
+
 def str2bool(v):
     """Util function for user friendly boolean flag args"""
     if isinstance(v, bool):
@@ -85,6 +88,18 @@ def parse_args():
         type=int,
         default=200,
         help="Maximmum number of new tokens to generate.",
+    )
+    parser.add_argument(
+        "--num_codes",
+        type=int,
+        default=164,
+        help="Number of long codes to generate",
+    )
+    parser.add_argument(
+        "--num_prompts",
+        type=int,
+        default=5,
+        help="Number of prompts per long code",
     )
     parser.add_argument(
         "--generation_seed",
@@ -242,6 +257,7 @@ def generate(prompt, args, model=None, device=None, tokenizer=None):
        as a logits processor. """
     
     print(f"Generating with {args}")
+
 
     watermark_processor = WatermarkLogitsProcessor(vocab=list(tokenizer.get_vocab().values()),
                                                     gamma=args.gamma,
