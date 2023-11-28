@@ -1,9 +1,9 @@
 import torch
 import os
-
+import random
 from lmw.demo_watermark import load_model, generate, detect, parse_args
-from human_eval.data import write_jsonl, read_problems
-from human_eval.evaluation import evaluate_functional_correctness
+from mxeval.data import read_problems, stream_jsonl, write_jsonl, get_metadata, get_data
+from mxeval.evaluation import evaluate_functional_correctness
 from pprint import pprint
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 
@@ -25,6 +25,8 @@ def get_value_from_tuple_list(lst, key):
             return item[1]
     return 0
 
+
+
 def main(args, result_dir, num_samples_per_task = 1): 
     """Run a command line version of the generation and detection operations
         and optionally launch and serve the gradio demo"""
@@ -43,7 +45,7 @@ def main(args, result_dir, num_samples_per_task = 1):
 
     # Generate and detect, report to stdout
     if not args.skip_model_load:
-        problems = read_problems()
+        problems = get_data(args.dataset, args.language)
 
         # Currently sampling only once for each input
         num_tasks = len(problems.keys())
@@ -126,10 +128,10 @@ def main(args, result_dir, num_samples_per_task = 1):
         os.makedirs(result_dir)
 
     write_jsonl(result_dir+"watermarked_samples.jsonl", watermarked_samples)
-    watermarked_results = evaluate_functional_correctness(result_dir+"watermarked_samples.jsonl")
+    watermarked_results = evaluate_functional_correctness(result_dir+"watermarked_samples.jsonl", problem_file = get_datafile(args.dataset, args.language))
 
     write_jsonl(result_dir+"without_watermark_samples.jsonl", nonwatermarked_samples)
-    without_watermark_results = evaluate_functional_correctness(result_dir+"without_watermark_samples.jsonl")
+    without_watermark_results = evaluate_functional_correctness(result_dir+"without_watermark_samples.jsonl", problem_file= get_datafile(args.dataset, args.language))
     
     # write results to file
     print('watermarked results:\n', watermarked_results)
@@ -161,13 +163,29 @@ def main(args, result_dir, num_samples_per_task = 1):
 
     with open(result_dir + 'standard_completions.txt', 'w') as f:
         f.writelines(str(standard_completions))
+    
+    with open(result_dir + 'watermarked_decoded.txt', 'w') as f:
+        f.writelines(str(decoded_output_with_watermark_lst))
+
+    with open(result_dir + 'standard_decoded.txt', 'w') as f:
+        f.writelines(str(decoded_output_without_watermark_lst))
 
     return
+
+def get_datafile(dataset="mbxp", language="python"):
+  metadata, datadir = get_metadata(dataset, metadata_type="problem")
+  if language.lower() not in metadata:
+    raise ValueError(f"Language {language} not found in metadata file")
+  datafile = metadata[language.lower()]
+  return os.path.join(datadir, datafile)
 
 if __name__ == "__main__":
     args = parse_args()
     print(args)
-    result_dir = f'results/watermarking/{args.model_size}/'
+    if args.use_robdist:
+        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/robdist/original/'
+    else:
+        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/vanilla/original/'
 
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
     world_size = int(os.environ.get("WORLD_SIZE", -1))

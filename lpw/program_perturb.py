@@ -457,7 +457,7 @@ def perturb(og_code, int_id = None, depth = 1, samples = 1):
 
     for s in range(NUM_SAMPLES):
       the_seq = []
-      for _ in range(DEPTH):
+      for i in range(DEPTH):
         if not int_id:
           int_id = random.randint(1, 8)
         if int_id == 0:
@@ -465,7 +465,10 @@ def perturb(og_code, int_id = None, depth = 1, samples = 1):
         if int_id == 1:
           the_seq.append(t_replace_true_false)
         elif int_id == 2:
-          the_seq.append(t_rename_local_variables)
+          if i % 2 == 0:
+            the_seq.append(t_rename_parameters)
+          else:
+            the_seq.append(t_rename_local_variables)
         elif int_id == 3:
           the_seq.append(t_rename_parameters)
         elif int_id == 4:
@@ -492,7 +495,7 @@ def perturb(og_code, int_id = None, depth = 1, samples = 1):
         except Exception as ex:
             import traceback
             traceback.print_exc()
-        results.append({'changed': False, 't_name': t_name, 'the_seq': the_seq, 'result': og_code})
+            results.append({'changed': False, 't_name': t_name, 'the_seq': the_seq, 'result': og_code})
     return results
 
 
@@ -501,17 +504,18 @@ if __name__ == "__main__":
     problems = read_problems()
     
     # Get the first key
-    n = 5
+    n = 150
     keys = list(problems.keys())[:n]
 
     for i in range(n):
+        if 'while' not in problems[keys[i]]['canonical_solution']:
+          continue
         og_code = problems[keys[i]]['prompt'] + problems[keys[i]]['canonical_solution']
-        res = perturb(og_code)
+        res = perturb(og_code, 7, 2, 1)
         print('original code:')
         print(og_code)
         print('perturbed code 1:' + str(res[0]['the_seq']))
         print(res[0]['result'])
         print('perturbed code 2:' + str(res[1]['the_seq']))
         print(res[1]['result'])
-        print('perturbed code 3:' + str(res[2]['the_seq']))
-        print(res[2]['result'])
+

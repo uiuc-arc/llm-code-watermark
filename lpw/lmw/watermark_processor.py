@@ -25,7 +25,15 @@ from tokenizers import Tokenizer
 from transformers import LogitsProcessor, LogitsProcessorList
 from nltk.util import ngrams
 from lmw.normalizers import normalization_strategy_lookup
+
+import numpy as np
+
+import pyximport
+pyximport.install(setup_args={"script_args" : ["--verbose"]})
+from lmw.levenshtein import levenshtein
+
 from torch.distributions import Categorical
+
 
 
 class WatermarkBase:
@@ -134,6 +142,7 @@ class WatermarkDetector(WatermarkBase):
         z_threshold: float = 4.0,
         normalizers: list[str] = ["unicode"],  # or also: ["unicode", "homoglyphs", "truecase"]
         ignore_repeated_bigrams: bool = False,
+        use_robdist = False, robdist_key = 42, robdist_n = 256, robdist_pval = 0.01,
         model: torch.nn.Module = None,
         prompt: str = None,
         **kwargs,
@@ -147,6 +156,7 @@ class WatermarkDetector(WatermarkBase):
         self.device = device
         self.z_threshold = z_threshold
         self.rng = torch.Generator(device=self.device)
+        self.use_robdist, self.robdist_key, self.robdist_n, self.robdist_pval = use_robdist, robdist_key, robdist_n, robdist_pval
 
         if self.seeding_scheme == "simple_1":
             self.min_prefix_len = 1
@@ -291,6 +301,7 @@ class WatermarkDetector(WatermarkBase):
 
         return score_dict
 
+  
     def detect(
         self,
         text: str = None,
@@ -317,6 +328,12 @@ class WatermarkDetector(WatermarkBase):
                 "requires an instance of the tokenizer ",
                 "that was used at generation time.",
             )
+            if self.use_robdist:
+                tokenized_text = self.tokenizer.encode(text, return_tensors='pt', truncation=True, max_length=2048).numpy()[0]
+                pval = permutation_test(tokenized_text, self.robdist_key, self.robdist_n,len(tokenized_text),len(self.tokenizer))
+                output_dict = {'num_tokens_scored': len(tokenized_text) * 1.0, 'num_green_tokens': len(tokenized_text) * 0.5, 'green_fraction': 0.5, 'z_score': 1.1 * self.z_threshold if pval <= self.robdist_pval else 0.0, 'p_value': pval, 'prediction': pval <= self.robdist_pval }
+                return output_dict
+            
             tokenized_text = self.tokenizer(text, return_tensors="pt", add_special_tokens=False)["input_ids"][0].to(self.device)
             if tokenized_text[0] == self.tokenizer.bos_token_id:
                 tokenized_text = tokenized_text[1:]
@@ -339,6 +356,119 @@ class WatermarkDetector(WatermarkBase):
                 output_dict["confidence"] = 1 - score_dict["p_value"]
 
         return output_dict
+
+
+def generate_shift(model,prompt,vocab_size,n,m,key):
+    rng = mersenne_rng(key)
+    xi = torch.tensor([rng.rand() for _ in range(n*vocab_size)]).view(n,vocab_size)
+    shift = torch.randint(n, (1,))
+
+    inputs = prompt.to(model.device)
+    attn = torch.ones_like(inputs)
+    past = None
+    for i in range(m):
+        with torch.no_grad():
+            if past:
+                output = model(inputs[:,-1:], past_key_values=past, attention_mask=attn)
+            else:
+                output = model(inputs)
+
+        probs = torch.nn.functional.softmax(output.logits[:,-1, :vocab_size], dim=-1).cpu()
+        token = exp_sampling(probs,xi[(shift+i)%n,:]).to(model.device)
+        inputs = torch.cat([inputs, token], dim=-1)
+
+        past = output.past_key_values
+        attn = torch.cat([attn, attn.new_ones((attn.shape[0], 1))], dim=-1)
+
+    return inputs.detach().cpu()
+
+def exp_sampling(probs,u):
+    return torch.argmax(u ** (1/probs),axis=1).unsqueeze(-1)
+
+
+def permutation_test(tokens,key,n,k,vocab_size,n_runs=100):
+    rng = mersenne_rng(key)
+    xi = np.array([rng.rand() for _ in range(n*vocab_size)], dtype=np.float32).reshape(n,vocab_size)
+    test_result = detect_robust(tokens,n,k,xi)
+
+    p_val = 0
+    for run in range(n_runs):
+        xi_alternative = np.random.rand(n, vocab_size).astype(np.float32)
+        null_result = detect_robust(tokens,n,k,xi_alternative)
+
+        # assuming lower test values indicate presence of watermark
+        p_val += null_result <= test_result
+
+    return (p_val+1.0)/(n_runs+1.0)
+
+
+def detect_robust(tokens,n,k,xi,gamma=0.0):
+    m = len(tokens)
+    n = len(xi)
+
+    A = np.empty((m-(k-1),n))
+    for i in range(m-(k-1)):
+        for j in range(n):
+            A[i][j] = levenshtein(tokens[i:i+k],xi[(j+np.arange(k))%n],gamma)
+
+    return np.min(A)
+
+class mersenne_rng(object):
+    def __init__(self, seed = 5489):
+        self.state = [0]*624
+        self.f = 1812433253
+        self.m = 397
+        self.u = 11
+        self.s = 7
+        self.b = 0x9D2C5680
+        self.t = 15
+        self.c = 0xEFC60000
+        self.l = 18
+        self.index = 624
+        self.lower_mask = (1<<31)-1
+        self.upper_mask = 1<<31
+
+        # update state
+        self.state[0] = seed
+        for i in range(1,624):
+            self.state[i] = self.int_32(self.f*(self.state[i-1]^(self.state[i-1]>>30)) + i)
+
+    def twist(self):
+        for i in range(624):
+            temp = self.int_32((self.state[i]&self.upper_mask)+(self.state[(i+1)%624]&self.lower_mask))
+            temp_shift = temp>>1
+            if temp%2 != 0:
+                temp_shift = temp_shift^0x9908b0df
+            self.state[i] = self.state[(i+self.m)%624]^temp_shift
+        self.index = 0
+
+    def int_32(self, number):
+        return int(0xFFFFFFFF & number)
+
+    def randint(self):
+        if self.index >= 624:
+            self.twist()
+        y = self.state[self.index]
+        y = y^(y>>self.u)
+        y = y^((y<<self.s)&self.b)
+        y = y^((y<<self.t)&self.c)
+        y = y^(y>>self.l)
+        self.index+=1
+        return self.int_32(y)
+
+    def rand(self):
+        return self.randint()*(1.0/4294967296.0);
+
+    def randperm(self, n):
+        # Fisher-Yates shuffle
+        p = list(range(n))
+        for i in range(n-1, 0, -1):
+            j = self.randint() % i
+            p[i], p[j] = p[j], p[i]
+
+        return p
+
+
 
 class SWEETEntropyCollector(LogitsProcessor):
     def __init__(self, *args, **kwargs):

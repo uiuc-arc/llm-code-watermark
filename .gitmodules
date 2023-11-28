@@ -1,3 +1,6 @@
 [submodule "lm-watermarking"]
 	path = lm-watermarking
 	url = https://github.com/jwkirchenbauer/lm-watermarking
+[submodule "llm-cfg"]
+	path = llm-cfg
+	url = https://github.com/shubhamugare/llm-cfg.git
