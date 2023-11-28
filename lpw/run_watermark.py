@@ -59,7 +59,7 @@ def main(args, result_dir, num_samples_per_task = 1):
             prompt = problems[task_id]["prompt"]
             args.default_prompt = prompt
             term_width = 80
-            print("#"*term_width)
+            print(task_id, "#"*term_width)
             print("Prompt:")
             print(prompt)
 
@@ -74,7 +74,8 @@ def main(args, result_dir, num_samples_per_task = 1):
             with_watermark_detection_result = detect(watermarked_output, 
                                                     args, 
                                                     device=device, 
-                                                    tokenizer=tokenizer)
+                                                    tokenizer=tokenizer,
+                                                    model=model)
             
             watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
             print('Watermarked_z_score:', watermarked_z_score)
@@ -88,7 +89,8 @@ def main(args, result_dir, num_samples_per_task = 1):
             without_watermark_detection_result = detect(standard_output, 
                                                         args, 
                                                         device=device, 
-                                                        tokenizer=tokenizer)
+                                                        tokenizer=tokenizer,
+                                                        model=model)
             
             nonwatermarked_z_score = float(get_value_from_tuple_list(without_watermark_detection_result[0], 'z-score'))
             print('Nonwatermarked_z_score:', nonwatermarked_z_score)
