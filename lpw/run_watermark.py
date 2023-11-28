@@ -184,6 +184,8 @@ if __name__ == "__main__":
     print(args)
     if args.use_robdist:
         result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/robdist/original/'
+    elif args.sweet_threshold:
+        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/sweet/original/'
     else:
         result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/vanilla/original/'
 
