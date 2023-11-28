@@ -1,43 +1,49 @@
 from lmw.demo_watermark import load_model, generate, detect, parse_args, load_tokenizer_device
-#from program_perturb import perturb
 import program_perturb_cst
-import program_perturb
 
-from human_eval.data import write_jsonl, read_problems
+from mxeval.data import read_problems, stream_jsonl, write_jsonl, get_metadata, get_data
+from mxeval.evaluation import evaluate_functional_correctness
 import json
 import os
-from run_watermark import get_value_from_tuple_list
-from human_eval.evaluation import evaluate_functional_correctness
+from run_watermark import get_value_from_tuple_list, get_datafile
 from pprint import pprint
 import re
 import libcst as cst
 import ast
+import astor
+import random
 
-
+def get_individual_function_lst(input_string):
+    code_list = re.split(r'\n(?=def\s)', input_string)
+    new_code_list = []
+    imports = ""
+    for code in code_list[1:]:
+        segments = re.split(r'^(import .*|from .* import .*)$', code, flags=re.MULTILINE)
+        new_code_list.append(imports + '\n' + segments[0])
+        if len(segments) > 1:
+            imports = " ".join(segments[1:])
+        else:
+            imports = ""
+    
+    return new_code_list
 
 
 def main(args, result_dir):
     args.normalizers = (args.normalizers.split(",") if args.normalizers else [])
 
-    with open(result_dir + "original/watermarked_samples.jsonl_results.jsonl", 'r') as f:
-        watermarked_samples = [json.loads(line) for line in f]
+    with open(result_dir + "original/watermarked_decoded.txt", 'r') as f:
+        watermarked_samples = ast.literal_eval(f.readlines()[0])
+       
 
-    with open(result_dir + "original/without_watermark_samples.jsonl_results.jsonl", 'r') as f:
-        nonwatermarked_samples = [json.loads(line) for line in f]
-
+    with open(result_dir + "original/standard_decoded.txt", 'r') as f:
+        nonwatermarked_samples =  ast.literal_eval(f.readlines()[0])
 
     if not args.skip_model_load:
        tokenizer, device = load_tokenizer_device(args)
     else:
        tokenizer, device = None, None
-    
-    
-    problems = read_problems()
-    num_tasks = len(problems.keys())
-    task_ids = list(problems.keys())[:num_tasks]
-    term_width = 80
 
-    # Currently sampling only once for each input
+    term_width = 80
 
 
     for perturbation_id in list(map(int, args.perturbation_ids.split())):
@@ -45,55 +51,60 @@ def main(args, result_dir):
         decoded_output_with_watermark_lst, decoded_output_without_watermark_lst, with_watermark_detection_result_lst, without_watermark_detection_result_lst = [], [], [], []
         watermarked_perturbation, standard_perturbation = None, None
         fraction_green = []
+
+        prop16 = 0
+        tottoks = 0
         
-        for i, task_id in enumerate(task_ids):
-            prompt = problems[task_id]["prompt"]
-            args.default_prompt = prompt
+        for i in range(args.num_codes):
             print("#"*term_width)
-            print("Prompt:")
-            print(prompt)
+            watermarked_output = ""
+            standard_output = ""
+            j = 0
+            while j < args.num_prompts:
+                idx = random.randrange(0, len(watermarked_samples))
+                try:
+                    exec(watermarked_samples[idx])
+                    exec(nonwatermarked_samples[idx])
 
-            used_cst_watermarked = False
-            used_cst_standard = False
-
-
-            try:
-                watermarked_perturbation = program_perturb.perturb(watermarked_samples[i]['completion'], perturbation_id, 1)[2]
-                watermarked_output = watermarked_perturbation['result']
-
-                if program_perturb_cst.find_comments_in_code(watermarked_samples[i]['completion']):   #watermarked_output.endswith('"""\n'):
-                    raise RuntimeError
-
+                except:
+                    continue
                 
-            except:
-                import pdb; pdb.set_trace()
-                watermarked_perturbation = program_perturb_cst.perturb(watermarked_samples[i]['completion'],  perturbation_id, depth= 1)[-1]
-                watermarked_output = watermarked_perturbation['result']
-                used_cst_watermarked = True
-
-
-            try:
-                standard_perturbation = program_perturb.perturb(nonwatermarked_samples[i]['completion'], perturbation_id, 1)[2]
-                standard_output = standard_perturbation['result']
-
-                if program_perturb_cst.find_comments_in_code(nonwatermarked_samples[i]['completion']): #standard_output.endswith('"""\n'):
-                    raise RuntimeError
-            
-            except:
-                standard_perturbation = program_perturb_cst.perturb(nonwatermarked_samples[i]['completion'],  perturbation_id, depth = 1)[-1]
-                standard_output = standard_perturbation['result']
-                used_cst_standard = True
-            
+                individual_function = watermarked_samples[idx]
+                individual_function = re.sub(r'#.*', '', individual_function)
                 
+                watermarked_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth= 10, samples= 1)[-1]
+                watermarked_output += watermarked_perturbation['result']
+                
+                individual_function = nonwatermarked_samples[i]
+                individual_function = re.sub(r'#.*', '', individual_function)
+                standard_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth = 10)[-1]
+                standard_output += standard_perturbation['result']
+                j += 1
 
-            idx = watermarked_output.index('"""', watermarked_output.index('"""') + 1) + 5 if '"""' in watermarked_output else watermarked_output.index("'''", watermarked_output.index("'''") + 1) + 5
 
-            
-            with_watermark_detection_result = detect(watermarked_output[idx:] if used_cst_watermarked else watermarked_output[idx:-1], args, device=device, tokenizer=tokenizer)
+
+            #Remove function definition
+            watermarked_completion = re.sub(r'\ndef \w+\(.*?\).*?:', '\n', watermarked_output, flags=re.DOTALL)
+
+            # Remove docstrings
+            watermarked_completion = re.sub(r'("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\')', '', watermarked_completion, flags=re.DOTALL)
+
+            watermarked_completion = re.sub(r"^\s*import\s+.+?$|^\s*from\s+.+?\s+import\s+.+?$", "", watermarked_completion, flags=re.MULTILINE)
+
+            # Remove empty lines
+            watermarked_completion = "\n".join([line for line in watermarked_completion.splitlines() if line.strip()])
+
+            watermarked_completion = watermarked_completion.strip()
+
+            with_watermark_detection_result = detect(watermarked_completion, args, device=device, tokenizer=tokenizer)
 
             
             watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
 
+            tmp = int(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)'))
+            if tmp < 16:
+                prop16 += 1
+            tottoks += tmp
             fraction_green.append(float(get_value_from_tuple_list(with_watermark_detection_result[0], '# Tokens in Greenlist'))/ float(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)')))
 
             print('Watermarked_z_score:', watermarked_z_score)
@@ -102,10 +113,24 @@ def main(args, result_dir):
                 print("True positive!")
             else:
                 print("False negative!")
+            
    
-            idx = standard_output.index('"""', standard_output.index('"""') + 1) + 5 if '"""' in standard_output else standard_output.index("'''", standard_output.index("'''") + 1) + 5
+            #Remove function definition
+            standard_completion = re.sub(r'\ndef \w+\(.*?\).*?:', '\n', standard_output, flags=re.DOTALL)
 
-            without_watermark_detection_result = detect(standard_output[idx:] if used_cst_standard else standard_output[idx:-1], 
+            # Remove docstrings
+            standard_completion = re.sub(r'("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\')', '', standard_completion, flags=re.DOTALL)
+
+            standard_completion = re.sub(r"^\s*import\s+.+?$|^\s*from\s+.+?\s+import\s+.+?$", "", standard_completion, flags=re.MULTILINE)
+
+            # Remove empty lines
+            standard_completion = "\n".join([line for line in standard_completion.splitlines() if line.strip()])
+
+            standard_completion = standard_completion.strip()
+
+            
+            
+            without_watermark_detection_result = detect(standard_completion, 
                                                         args, 
                                                         device=device, 
                                                         tokenizer=tokenizer)
@@ -118,9 +143,6 @@ def main(args, result_dir):
                 print("False positive!")
             else:
                 print("True negative!")
-
-            watermarked_samples.append(dict(task_id=task_id, completion= watermarked_output))
-            nonwatermarked_samples.append(dict(task_id=task_id, completion= standard_output))
 
             decoded_output_without_watermark_lst.append(watermarked_output)
             decoded_output_with_watermark_lst.append(standard_output)
@@ -145,30 +167,21 @@ def main(args, result_dir):
             pprint(with_watermark_detection_result)
             print("-"*term_width)
 
-        perturbed_result_dir = result_dir + re.search(r"<function\s+(.*?)\s+at", str(watermarked_perturbation['the_seq'][0])).group(1) + '/'
+        perturbed_result_dir = result_dir + {args.num_prompts} + '/' + re.search(r"<function\s+(.*?)\s+at", str(watermarked_perturbation['the_seq'][0])).group(1) + '/'
         if not os.path.exists(perturbed_result_dir):
             os.makedirs(perturbed_result_dir)
 
-        write_jsonl(perturbed_result_dir+"watermarked_samples.jsonl", watermarked_samples)
-        watermarked_results = evaluate_functional_correctness(perturbed_result_dir+"watermarked_samples.jsonl")
 
-        write_jsonl(perturbed_result_dir+"without_watermark_samples.jsonl", nonwatermarked_samples)
-        without_watermark_results = evaluate_functional_correctness(perturbed_result_dir+"without_watermark_samples.jsonl")
-        
-        # write results to file
-        print('watermarked results:\n', watermarked_results)
-        with open(perturbed_result_dir+'watermarked_results.txt', 'w') as f:
-            f.write(str(watermarked_results))
-        
-        print('without watermark results:\n', without_watermark_results)
-        with open(perturbed_result_dir+'without_watermark_results.txt', 'w') as f:
-            f.write(str(without_watermark_results))
-        
-        print('True positives: ', true_positive, '/', len(task_ids))
-        print('False positives: ', false_positive, '/', len(task_ids))
+        print('True positives: ', true_positive, '/', args.num_codes)
+        print('False positives: ', false_positive, '/', args.num_codes)
 
 
-        print('Mean Proportion in greenlist: ', sum(fraction_green)/len(task_ids) )
+        print('Mean Proportion in greenlist: ', sum(fraction_green)/args.num_codes)
+
+
+        print('prop tokens < 16', prop16/args.num_codes)
+
+        print('mean tokens ', tottoks/args.num_codes)
 
         # write results to file
         with open(perturbed_result_dir+'watermarked_detections.txt', 'w') as f:
@@ -178,13 +191,17 @@ def main(args, result_dir):
             f.writelines(str(without_watermark_detection_result_lst))
 
         with open(perturbed_result_dir+'true_positive_rate.txt', 'w') as f:
-            f.write(str(true_positive/len(task_ids)))
+            f.write(str(true_positive/args.num_codes))
 
         with open(perturbed_result_dir+'false_positive_rate.txt', 'w') as f:
-            f.write(str(false_positive/len(task_ids)))
+            f.write(str(false_positive/args.num_codes))
 
 if __name__ == "__main__":
     args = parse_args()
     print(args)
-    result_dir = f'results/watermarking/{args.model_size}/'
+    if args.use_robdist:
+        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/robdist/'
+    else:
+        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/vanilla/'
+
     main(args, result_dir)    

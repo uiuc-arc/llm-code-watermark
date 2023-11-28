@@ -22,7 +22,9 @@ from functools import partial
 
 import numpy # for gradio hot reload
 import gradio as gr
-
+import numpy as np
+import os, sys, argparse, time
+from lmw.watermark_processor import mersenne_rng, generate_shift
 import torch
 
 from transformers import (AutoTokenizer,
@@ -98,7 +100,7 @@ def parse_args():
     parser.add_argument(
         "--num_prompts",
         type=int,
-        default=5,
+        default=2,
         help="Number of prompts per long code",
     )
     parser.add_argument(
@@ -197,6 +199,35 @@ def parse_args():
         default=False,
         help="Whether to run model in float16 precsion.",
     )
+    parser.add_argument(
+        "--use_robdist", 
+        type = str2bool, 
+        default= False,
+        help= "Whether to use robust dist watermark from https://github.com/jthickstun/watermark/blob/main/generate.py"
+    )
+    parser.add_argument(
+        "--p_val", 
+        type = float, 
+        default=  0.1,
+        help= "p value from https://github.com/jthickstun/watermark/blob/main/generate.py"
+    )
+    parser.add_argument(
+        "--robdist_n", 
+        type = int, 
+        default=  256,
+        help= "watermark length value from https://github.com/jthickstun/watermark/blob/main/generate.py"
+    )
+    parser.add_argument(
+        "--robdist_key", 
+        type = int, 
+        default=  42,
+        help= "watermark seed from https://github.com/jthickstun/watermark/blob/main/generate.py"
+    )
+    parser.add_argument("--language", choices = ["python", "go"], default = "python", help = "language")
+    parser.add_argument("--dataset", choices = ["mbxp", "multi-humaneval", "mathqa-x"], default = "multi-humaneval", help = "dataset")
+
+
+    
     args = parser.parse_args()
     return args
 
@@ -258,7 +289,6 @@ def generate(prompt, args, model=None, device=None, tokenizer=None):
     
     print(f"Generating with {args}")
 
-
     watermark_processor = WatermarkLogitsProcessor(vocab=list(tokenizer.get_vocab().values()),
                                                     gamma=args.gamma,
                                                     delta=args.delta,
@@ -282,11 +312,12 @@ def generate(prompt, args, model=None, device=None, tokenizer=None):
         model.generate,
         **gen_kwargs
     )
-    generate_with_watermark = partial(
-        model.generate,
-        logits_processor=LogitsProcessorList([watermark_processor]), 
-        **gen_kwargs
-    )
+    if not args.use_robdist:
+        generate_with_watermark = partial(
+            model.generate,
+            logits_processor=LogitsProcessorList([watermark_processor]), 
+            **gen_kwargs
+        )
     if args.prompt_max_length:
         pass
     elif hasattr(model.config,"max_position_embedding"):
@@ -294,9 +325,12 @@ def generate(prompt, args, model=None, device=None, tokenizer=None):
     else:
         args.prompt_max_length = 2048-args.max_new_tokens
 
-    tokd_input = tokenizer(prompt, return_tensors="pt", add_special_tokens=True, truncation=True, max_length=args.prompt_max_length).to(device)
+        
+    
+    tokd_input = tokenizer(prompt, return_tensors="pt", add_special_tokens=True, truncation=True, max_length=args.prompt_max_length).to(device) 
     truncation_warning = True if tokd_input["input_ids"].shape[-1] == args.prompt_max_length else False
     redecoded_input = tokenizer.batch_decode(tokd_input["input_ids"], skip_special_tokens=True)[0]
+
 
     torch.manual_seed(args.generation_seed)
     output_without_watermark = generate_without_watermark(**tokd_input)
@@ -304,18 +338,27 @@ def generate(prompt, args, model=None, device=None, tokenizer=None):
     # optional to seed before second generation, but will not be the same again generally, unless delta==0.0, no-op watermark
     if args.seed_separately: 
         torch.manual_seed(args.generation_seed)
-    output_with_watermark = generate_with_watermark(**tokd_input)
+    
+    if not args.use_robdist:
+        output_with_watermark = generate_with_watermark(**tokd_input)
 
     if args.is_decoder_only_model:
         # need to isolate the newly generated tokens
         output_without_watermark = output_without_watermark[:,tokd_input["input_ids"].shape[-1]:]
-        output_with_watermark = output_with_watermark[:,tokd_input["input_ids"].shape[-1]:]
+        if not args.use_robdist:
+            output_with_watermark = output_with_watermark[:,tokd_input["input_ids"].shape[-1]:]
 
     decoded_output_without_watermark = tokenizer.batch_decode(output_without_watermark, skip_special_tokens=True)[0]
-    decoded_output_with_watermark = tokenizer.batch_decode(output_with_watermark, skip_special_tokens=True)[0]
+    
+    if args.use_robdist:
+        tkns = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True, truncation=True, max_length=args.prompt_max_length).to(device) 
+        output_with_watermark = generate_shift(model, tkns,len(tokenizer),args.robdist_n, len(prompt),args.robdist_key)[0]
+        decoded_output_with_watermark = tokenizer.decode(output_with_watermark, skip_special_tokens=True)
+    else:
+        decoded_output_with_watermark = tokenizer.batch_decode(output_with_watermark, skip_special_tokens=True)[0]
 
     return (redecoded_input,
-            int(truncation_warning),
+            truncation_warning,
             decoded_output_without_watermark, 
             decoded_output_with_watermark,
             args) 
@@ -364,7 +407,7 @@ def detect(input_text, args, device=None, tokenizer=None):
                                         z_threshold=args.detection_z_threshold,
                                         normalizers=args.normalizers,
                                         ignore_repeated_bigrams=args.ignore_repeated_bigrams,
-                                        select_green_tokens=args.select_green_tokens)
+                                        select_green_tokens=args.select_green_tokens, use_robdist= args.use_robdist, robdist_key = args.robdist_key, robdist_n = args.robdist_n, robdist_pval = args.p_val)
     if len(input_text)-1 > watermark_detector.min_prefix_len:
         score_dict = watermark_detector.detect(input_text)
         # output = str_format_scores(score_dict, watermark_detector.z_threshold)

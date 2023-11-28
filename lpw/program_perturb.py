@@ -508,13 +508,14 @@ if __name__ == "__main__":
     keys = list(problems.keys())[:n]
 
     for i in range(n):
+        if 'while' not in problems[keys[i]]['canonical_solution']:
+          continue
         og_code = problems[keys[i]]['prompt'] + problems[keys[i]]['canonical_solution']
-        res = perturb(og_code, 1, 2, 1)
+        res = perturb(og_code, 7, 2, 1)
         print('original code:')
         print(og_code)
         print('perturbed code 1:' + str(res[0]['the_seq']))
         print(res[0]['result'])
         print('perturbed code 2:' + str(res[1]['the_seq']))
         print(res[1]['result'])
-        print('perturbed code 3:' + str(res[2]['the_seq']))
-        print(res[2]['result'])
+
