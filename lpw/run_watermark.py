@@ -5,6 +5,7 @@ from lmw.demo_watermark import load_model, generate, detect, parse_args
 from mxeval.data import read_problems, stream_jsonl, write_jsonl, get_metadata, get_data
 from mxeval.evaluation import evaluate_functional_correctness
 from pprint import pprint
+import gc
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 
 
@@ -100,8 +101,8 @@ def main(args, result_dir, num_samples_per_task = 1):
             else:
                 print("True negative!")
 
-            watermarked_samples.append(dict(task_id=task_id, completion=f"{prompt} {watermarked_output}"))
-            nonwatermarked_samples.append(dict(task_id=task_id, completion=f"{prompt} {standard_output}"))
+            watermarked_samples.append(dict(task_id=task_id, completion=f"{prompt} {watermarked_output}", language=problems[task_id]["language"]))
+            nonwatermarked_samples.append(dict(task_id=task_id, completion=f"{prompt} {standard_output}", language=problems[task_id]["language"]))
 
             decoded_output_without_watermark_lst.append(f"{prompt} {watermarked_output}")
             decoded_output_with_watermark_lst.append(f"{prompt} {standard_output}")
