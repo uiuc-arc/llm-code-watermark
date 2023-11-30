@@ -75,7 +75,7 @@ def parse_args():
     parser.add_argument(
         "--model_size",
         type= int,
-        default= 7,
+        default= 13,
         help="size of llama model",
     )
 
