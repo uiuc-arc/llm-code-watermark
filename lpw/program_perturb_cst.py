@@ -489,8 +489,8 @@ class t_seq(object):
 
 
 
-def t_identity(the_ast):
-  return True, the_ast
+def t_identity(module, uid = 1):
+  return True, module.code
 
 
 def perturb(og_code, int_id = None, depth = 1, samples = 1):
@@ -501,7 +501,7 @@ def perturb(og_code, int_id = None, depth = 1, samples = 1):
     for s in range(NUM_SAMPLES):
       the_seq = []
       for i in range(DEPTH):
-        if not int_id:
+        if int_id == None:
           int_id = random.randint(1, 8)
         if int_id == 0:
           the_seq.append(t_identity)

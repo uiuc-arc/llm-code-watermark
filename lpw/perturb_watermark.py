@@ -1,6 +1,6 @@
 from lmw.demo_watermark import load_model, generate, detect, parse_args, load_tokenizer_device
 import program_perturb_cst
-
+from lmw.watermark_processor import GPTWatermarkDetector
 from mxeval.data import read_problems, stream_jsonl, write_jsonl, get_metadata, get_data
 from mxeval.evaluation import evaluate_functional_correctness
 import json
@@ -27,6 +27,18 @@ def get_individual_function_lst(input_string):
     
     return new_code_list
 
+def get_completion(output):
+        #Remove function definition
+    completion = re.sub(r'\ndef \w+\(.*?\).*?:', '\n', output, flags=re.DOTALL)
+    # Remove docstrings
+    completion = re.sub(r'("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\')', '',completion, flags=re.DOTALL)
+    completion = re.sub(r"^\s*import\s+.+?$|^\s*from\s+.+?\s+import\s+.+?$", "", completion, flags=re.MULTILINE)
+    # Remove empty lines
+    completion = "\n".join([line for line in completion.splitlines() if line.strip()])
+    completion = completion.strip()
+    return completion
+
+
 
 def main(args, result_dir):
     args.normalizers = (args.normalizers.split(",") if args.normalizers else [])
@@ -34,9 +46,10 @@ def main(args, result_dir):
     with open(result_dir + "original/watermarked_decoded.txt", 'r') as f:
         watermarked_samples = ast.literal_eval(f.readlines()[0])
        
-
     with open(result_dir + "original/standard_decoded.txt", 'r') as f:
         nonwatermarked_samples =  ast.literal_eval(f.readlines()[0])
+    
+   #watermarked_samples, nonwatermarked_samples = nonwatermarked_samples, watermarked_samples #ignore this 
 
     if not args.skip_model_load:
        tokenizer, device = load_tokenizer_device(args)
@@ -45,6 +58,7 @@ def main(args, result_dir):
 
     term_width = 80
 
+    unigram_detector = None if not args.use_unigram else GPTWatermarkDetector(fraction=args.unigram_fraction, strength=args.unigram_strength, vocab_size= tokenizer.vocab_size, watermark_key=args.unigram_wm_key)
 
     for perturbation_id in list(map(int, args.perturbation_ids.split())):
         true_positive, false_positive = 0, 0
@@ -68,37 +82,25 @@ def main(args, result_dir):
 
                 except:
                     continue
-                
                 individual_function = watermarked_samples[idx]
                 individual_function = re.sub(r'#.*', '', individual_function)
-                
-                watermarked_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth= 10, samples= 1)[-1]
-                watermarked_output += watermarked_perturbation['result']
-                
+                if get_completion(individual_function) == "":
+                    continue
+                watermarked_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth= 3, samples= 1)[-1]
+
                 individual_function = nonwatermarked_samples[i]
                 individual_function = re.sub(r'#.*', '', individual_function)
-                standard_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth = 10)[-1]
+                
+                if get_completion(individual_function) == "":
+                    continue
+                
+                standard_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth = 3)[-1]
+                watermarked_output += watermarked_perturbation['result']
                 standard_output += standard_perturbation['result']
                 j += 1
 
 
-
-            #Remove function definition
-            watermarked_completion = re.sub(r'\ndef \w+\(.*?\).*?:', '\n', watermarked_output, flags=re.DOTALL)
-
-            # Remove docstrings
-            watermarked_completion = re.sub(r'("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\')', '', watermarked_completion, flags=re.DOTALL)
-
-            watermarked_completion = re.sub(r"^\s*import\s+.+?$|^\s*from\s+.+?\s+import\s+.+?$", "", watermarked_completion, flags=re.MULTILINE)
-
-            # Remove empty lines
-            watermarked_completion = "\n".join([line for line in watermarked_completion.splitlines() if line.strip()])
-
-            watermarked_completion = watermarked_completion.strip()
-
-            with_watermark_detection_result = detect(watermarked_completion, args, device=device, tokenizer=tokenizer)
-
-            
+            with_watermark_detection_result = detect(get_completion(watermarked_output), args, device=device, tokenizer=tokenizer, unigram_detector= unigram_detector)
             watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
 
             tmp = int(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)'))
@@ -113,27 +115,11 @@ def main(args, result_dir):
                 print("True positive!")
             else:
                 print("False negative!")
-            
-   
-            #Remove function definition
-            standard_completion = re.sub(r'\ndef \w+\(.*?\).*?:', '\n', standard_output, flags=re.DOTALL)
 
-            # Remove docstrings
-            standard_completion = re.sub(r'("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\')', '', standard_completion, flags=re.DOTALL)
-
-            standard_completion = re.sub(r"^\s*import\s+.+?$|^\s*from\s+.+?\s+import\s+.+?$", "", standard_completion, flags=re.MULTILINE)
-
-            # Remove empty lines
-            standard_completion = "\n".join([line for line in standard_completion.splitlines() if line.strip()])
-
-            standard_completion = standard_completion.strip()
-
-            
-            
-            without_watermark_detection_result = detect(standard_completion, 
+            without_watermark_detection_result = detect(get_completion(standard_output), 
                                                         args, 
                                                         device=device, 
-                                                        tokenizer=tokenizer)
+                                                        tokenizer=tokenizer, unigram_detector= unigram_detector)
             
             nonwatermarked_z_score = float(get_value_from_tuple_list(without_watermark_detection_result[0], 'z-score'))
 
@@ -167,7 +153,7 @@ def main(args, result_dir):
             pprint(with_watermark_detection_result)
             print("-"*term_width)
 
-        perturbed_result_dir = result_dir + {args.num_prompts} + '/' + re.search(r"<function\s+(.*?)\s+at", str(watermarked_perturbation['the_seq'][0])).group(1) + '/'
+        perturbed_result_dir = result_dir + str(args.num_prompts) + '/' + re.search(r"<function\s+(.*?)\s+at", str(watermarked_perturbation['the_seq'][0])).group(1) + '/'
         if not os.path.exists(perturbed_result_dir):
             os.makedirs(perturbed_result_dir)
 
@@ -199,11 +185,14 @@ def main(args, result_dir):
 if __name__ == "__main__":
     args = parse_args()
     print(args)
+    sz = args.model_size if not args.use_codellama else f'CodeLlama{args.model_size}'
     if args.use_robdist:
-        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/robdist/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/robdist/'
     elif args.sweet_threshold:
-        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/sweet/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/sweet/'
+    elif args.use_unigram:
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/unigram/'
     else:
-        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/vanilla/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/vanilla/'
 
     main(args, result_dir)    
