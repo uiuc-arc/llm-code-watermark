@@ -25,16 +25,14 @@ from tokenizers import Tokenizer
 from transformers import LogitsProcessor, LogitsProcessorList
 from nltk.util import ngrams
 from lmw.normalizers import normalization_strategy_lookup
-
+import hashlib
 import numpy as np
-
+from transformers import LogitsWarper
 import pyximport
 pyximport.install(setup_args={"script_args" : ["--verbose"]})
 from lmw.levenshtein import levenshtein
 
 from torch.distributions import Categorical
-
-
 
 class WatermarkBase:
     def __init__(
@@ -142,7 +140,7 @@ class WatermarkDetector(WatermarkBase):
         z_threshold: float = 4.0,
         normalizers: list[str] = ["unicode"],  # or also: ["unicode", "homoglyphs", "truecase"]
         ignore_repeated_bigrams: bool = False,
-        use_robdist = False, robdist_key = 42, robdist_n = 256, robdist_pval = 0.01,
+        use_robdist = False, robdist_key = 42, robdist_n = 256, robdist_pval = 0.01, unigram_detector = None,
         model: torch.nn.Module = None,
         prompt: str = None,
         **kwargs,
@@ -173,7 +171,7 @@ class WatermarkDetector(WatermarkBase):
         
         self.model = model
         self.prompt = prompt
-
+        self.unigram_detector = unigram_detector
 
     def _compute_z_score(self, observed_count, T):
         # count refers to number of green tokens, T is total number of tokens
@@ -331,7 +329,13 @@ class WatermarkDetector(WatermarkBase):
             if self.use_robdist:
                 tokenized_text = self.tokenizer.encode(text, return_tensors='pt', truncation=True, max_length=2048).numpy()[0]
                 pval = permutation_test(tokenized_text, self.robdist_key, self.robdist_n,len(tokenized_text),len(self.tokenizer))
-                output_dict = {'num_tokens_scored': len(tokenized_text) * 1.0, 'num_green_tokens': len(tokenized_text) * 0.5, 'green_fraction': 0.5, 'z_score': 1.1 * self.z_threshold if pval <= self.robdist_pval else 0.0, 'p_value': pval, 'prediction': pval <= self.robdist_pval }
+                output_dict = {'num_tokens_scored': len(tokenized_text) * 1.0, 'num_green_tokens': len(tokenized_text) * 0.5, 'green_fraction': 0.5, 'z_score': 1.1 * self.z_threshold if pval <= self.robdist_pval else 0.0, 'p_value': pval, 'prediction': pval <= self.robdist_pval, 'confidence': 1 - pval }
+                return output_dict
+
+            if self.unigram_detector:
+                tokenized_text =  self.tokenizer(text, add_special_tokens=False)["input_ids"]
+                gtoks, zscore = self.unigram_detector.detect(tokenized_text)
+                output_dict = {'num_tokens_scored': len(tokenized_text) * 1.0, 'num_green_tokens': gtoks * 1.0, 'green_fraction': 1.0 * gtoks/len(tokenized_text), 'z_score': zscore, 'p_value': self._compute_p_value(zscore), 'prediction': zscore > self.z_threshold, 'confidence': 1 - self._compute_p_value(zscore) }
                 return output_dict
             
             tokenized_text = self.tokenizer(text, return_tensors="pt", add_special_tokens=False)["input_ids"][0].to(self.device)
@@ -479,3 +483,104 @@ class SWEETEntropyCollector(LogitsProcessor):
         entropy = Categorical(probs = scores.softmax(-1)).entropy()
         self.entropy.append(entropy)
         return scores
+
+class GPTWatermarkBase:
+    """
+    Base class for watermarking distributions with fixed-group green-listed tokens.
+
+    Args:
+        fraction: The fraction of the distribution to be green-listed.
+        strength: The strength of the green-listing. Higher values result in higher logit scores for green-listed tokens.
+        vocab_size: The size of the vocabulary.
+        watermark_key: The random seed for the green-listing.
+    """
+
+    def __init__(self, fraction: float = 0.5, strength: float = 2.0, vocab_size: int = 50257, watermark_key: int = 0):
+        rng = np.random.default_rng(self._hash_fn(watermark_key))
+        mask = np.array([True] * int(fraction * vocab_size) + [False] * (vocab_size - int(fraction * vocab_size)))
+        rng.shuffle(mask)
+        self.green_list_mask = torch.tensor(mask, dtype=torch.float32)
+        self.strength = strength
+        self.fraction = fraction
+
+    @staticmethod
+    def _hash_fn(x: int) -> int:
+        """solution from https://stackoverflow.com/questions/67219691/python-hash-function-that-returns-32-or-64-bits"""
+        x = np.int64(x)
+        return int.from_bytes(hashlib.sha256(x).digest()[:4], 'little')
+
+
+class GPTWatermarkLogitsWarper(GPTWatermarkBase, LogitsWarper):
+    """
+    LogitsWarper for watermarking distributions with fixed-group green-listed tokens.
+
+    Args:
+        fraction: The fraction of the distribution to be green-listed.
+        strength: The strength of the green-listing. Higher values result in higher logit scores for green-listed tokens.
+        vocab_size: The size of the vocabulary.
+        watermark_key: The random seed for the green-listing.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.FloatTensor:
+        """Add the watermark to the logits and return new logits."""
+        watermark = self.strength * self.green_list_mask
+        new_logits = scores + watermark.to(scores.device)
+        return new_logits
+
+
+class GPTWatermarkDetector(GPTWatermarkBase):
+    """
+    Class for detecting watermarks in a sequence of tokens.
+
+    Args:
+        fraction: The fraction of the distribution to be green-listed.
+        strength: The strength of the green-listing. Higher values result in higher logit scores for green-listed tokens.
+        vocab_size: The size of the vocabulary.
+        watermark_key: The random seed for the green-listing.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def _z_score(num_green: int, total: int, fraction: float) -> float:
+        """Calculate and return the z-score of the number of green tokens in a sequence."""
+        return (num_green - fraction * total) / np.sqrt(fraction * (1 - fraction) * total)
+    
+    @staticmethod
+    def _compute_tau(m: int, N: int, alpha: float) -> float:
+        """
+        Compute the threshold tau for the dynamic thresholding.
+
+        Args:
+            m: The number of unique tokens in the sequence.
+            N: Vocabulary size.
+            alpha: The false positive rate to control.
+        Returns:
+            The threshold tau.
+        """
+        factor = np.sqrt(1 - (m - 1) / (N - 1))
+        tau = factor * scipy.stats.norm.ppf(1 - alpha)
+        return tau
+
+    def detect(self, sequence) -> float:
+        """Detect the watermark in a sequence of tokens and return the z value."""
+        green_tokens = int(sum(self.green_list_mask[i] for i in sequence))
+
+        return green_tokens, self._z_score(green_tokens, len(sequence), self.fraction)
+
+    def unidetect(self, sequence) -> float:
+        """Detect the watermark in a sequence of tokens and return the z value. Just for unique tokens."""
+        sequence = list(set(sequence))
+        green_tokens = int(sum(self.green_list_mask[i] for i in sequence))
+        return self._z_score(green_tokens, len(sequence), self.fraction)
+    
+    def dynamic_threshold(self, sequence, alpha: float, vocab_size: int) -> (bool, float):
+        """Dynamic thresholding for watermark detection. True if the sequence is watermarked, False otherwise."""
+        z_score = self.unidetect(sequence)
+        tau = self._compute_tau(len(list(set(sequence))), vocab_size, alpha)
+        return z_score > tau, z_score
+

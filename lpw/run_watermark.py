@@ -7,6 +7,7 @@ from mxeval.evaluation import evaluate_functional_correctness
 from pprint import pprint
 import gc
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
+from lmw.watermark_processor import GPTWatermarkDetector
 
 
 # reference: https://github.com/declare-lab/instruct-eval/blob/main/human_eval/main.py#L35
@@ -41,6 +42,8 @@ def main(args, result_dir, num_samples_per_task = 1):
     else:
         model, tokenizer, device = None, None, None
     
+    unigram_detector = None if not args.use_unigram else GPTWatermarkDetector(fraction=args.unigram_fraction, strength=args.unigram_strength, vocab_size= tokenizer.vocab_size, watermark_key=args.unigram_wm_key)
+
     watermarked_samples = []
     nonwatermarked_samples = []
 
@@ -76,7 +79,7 @@ def main(args, result_dir, num_samples_per_task = 1):
                                                     args, 
                                                     device=device, 
                                                     tokenizer=tokenizer,
-                                                    model=model)
+                                                    model=model, unigram_detector= unigram_detector)
             
             watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
             print('Watermarked_z_score:', watermarked_z_score)
@@ -91,7 +94,7 @@ def main(args, result_dir, num_samples_per_task = 1):
                                                         args, 
                                                         device=device, 
                                                         tokenizer=tokenizer,
-                                                        model=model)
+                                                        model=model, unigram_detector= unigram_detector)
             
             nonwatermarked_z_score = float(get_value_from_tuple_list(without_watermark_detection_result[0], 'z-score'))
             print('Nonwatermarked_z_score:', nonwatermarked_z_score)
@@ -104,8 +107,8 @@ def main(args, result_dir, num_samples_per_task = 1):
             watermarked_samples.append(dict(task_id=task_id, completion=f"{prompt} {watermarked_output}", language=problems[task_id]["language"]))
             nonwatermarked_samples.append(dict(task_id=task_id, completion=f"{prompt} {standard_output}", language=problems[task_id]["language"]))
 
-            decoded_output_without_watermark_lst.append(f"{prompt} {watermarked_output}")
-            decoded_output_with_watermark_lst.append(f"{prompt} {standard_output}")
+            decoded_output_without_watermark_lst.append(f"{prompt} {standard_output}")
+            decoded_output_with_watermark_lst.append(f"{prompt} {watermarked_output}")
             with_watermark_detection_result_lst.append(with_watermark_detection_result)
             without_watermark_detection_result_lst.append(without_watermark_detection_result)
 
@@ -183,12 +186,15 @@ def get_datafile(dataset="mbxp", language="python"):
 if __name__ == "__main__":
     args = parse_args()
     print(args)
+    sz = args.model_size if not args.use_codellama else f'CodeLlama{args.model_size}'
     if args.use_robdist:
-        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/robdist/original/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/robdist/original/'
     elif args.sweet_threshold:
-        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/sweet/original/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/sweet/original/'
+    elif args.use_unigram:
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/unigram/original/'
     else:
-        result_dir = f'results/watermarking/{args.model_size}/{args.dataset}/{args.language}/vanilla/original/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/vanilla/original/'
 
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
     world_size = int(os.environ.get("WORLD_SIZE", -1))

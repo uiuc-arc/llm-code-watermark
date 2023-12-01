@@ -32,7 +32,7 @@ from transformers import (AutoTokenizer,
                           AutoModelForCausalLM,
                           LogitsProcessorList, LlamaForCausalLM, LlamaTokenizer,  LlamaTokenizerFast)
 
-from lmw.watermark_processor import WatermarkLogitsProcessor, WatermarkDetector
+from lmw.watermark_processor import WatermarkLogitsProcessor, WatermarkDetector, GPTWatermarkLogitsWarper
 
 
 # from cfg.python_decoder import PythonDecoder
@@ -100,7 +100,7 @@ def parse_args():
     parser.add_argument(
         "--num_prompts",
         type=int,
-        default=2,
+        default=3,
         help="Number of prompts per long code",
     )
     parser.add_argument(
@@ -172,7 +172,7 @@ def parse_args():
     parser.add_argument(
         "--perturbation_ids",
         type= str,
-        default= "2",
+        default= "0 1 2 3 4 5 6 7",
         help="List of ids corresponding mapping to specific program perturbations",
     )
     parser.add_argument(
@@ -231,9 +231,13 @@ def parse_args():
     )
     parser.add_argument("--language", choices = ["python", "go"], default = "python", help = "language")
     parser.add_argument("--dataset", choices = ["mbxp", "multi-humaneval", "mathqa-x"], default = "multi-humaneval", help = "dataset")
+    parser.add_argument("--default_prompt", type = str, default = "", help = "default prompt")
+    parser.add_argument("--use_unigram", type = str2bool, default = False, help = "use unigram watermark")
+    parser.add_argument("--unigram_fraction", type=float, default=0.5)
+    parser.add_argument("--unigram_strength", type=float, default=2.0)
+    parser.add_argument("--unigram_wm_key", type=int, default=0)
+    parser.add_argument("--use_codellama", type=str2bool, default=False)
 
-
-    
     args = parser.parse_args()
     return args
 
@@ -256,8 +260,12 @@ def load_tokenizer_device(args):
 
 def load_model(args):
     """Load and return the model and tokenizer"""
+    torch.cuda.empty_cache()
     if "llama" in args.model_name_or_path:
-        model_name_or_path = args.model_name_or_path + str(args.model_size) + 'B/'
+        if args.use_codellama:
+            model_name_or_path = args.model_name_or_path + 'CodeLlama-' + str(args.model_size) + 'b-Python/'
+        else:
+            model_name_or_path = args.model_name_or_path + str(args.model_size) + 'B/'
     args.is_seq2seq_model = any([(model_type in model_name_or_path) for model_type in ["t5","T0"]])
     args.is_decoder_only_model = any([(model_type in model_name_or_path) for model_type in ["gpt","opt","bloom", "llama"]])
     if args.is_seq2seq_model:
@@ -281,7 +289,7 @@ def load_model(args):
         device = "cpu"
     model.eval()
 
-    if "llama" in model_name_or_path:
+    if "llama" in model_name_or_path and not args.use_codellama:
         tokenizer = LlamaTokenizer.from_pretrained(model_name_or_path)
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -295,13 +303,22 @@ def generate(prompt, args, model=None, device=None, tokenizer=None):
     
     print(f"Generating with {args}")
 
-    watermark_processor = WatermarkLogitsProcessor(vocab=list(tokenizer.get_vocab().values()),
-                                                    gamma=args.gamma,
-                                                    delta=args.delta,
-                                                    seeding_scheme=args.seeding_scheme,
-                                                    select_green_tokens=args.select_green_tokens,
-                                                    sweet_threshold=args.sweet_threshold,
-                                                    )
+    
+    if args.use_unigram:
+        watermark_processor =GPTWatermarkLogitsWarper(fraction=args.unigram_fraction,
+                                                                        strength=args.unigram_strength,
+                                                                        vocab_size=model.config.vocab_size,
+                                                                        watermark_key=args.unigram_wm_key)
+    
+    else:
+        watermark_processor = WatermarkLogitsProcessor(vocab=list(tokenizer.get_vocab().values()),
+                                                        gamma=args.gamma,
+                                                        delta=args.delta,
+                                                        seeding_scheme=args.seeding_scheme,
+                                                        select_green_tokens=args.select_green_tokens,
+                                                        sweet_threshold=args.sweet_threshold,
+                                                        )
+    
 
     gen_kwargs = dict(max_new_tokens=args.max_new_tokens)
 
@@ -404,7 +421,7 @@ def list_format_scores(score_dict, detection_threshold):
         lst_2d.insert(-1,["z-score Threshold", f"{detection_threshold}"])
     return lst_2d
 
-def detect(input_text, args, device=None, tokenizer=None, model=None):
+def detect(input_text, args, device=None, tokenizer=None, model=None, unigram_detector = None):
     """Instantiate the WatermarkDetection object and call detect on
         the input text returning the scores and outcome of the test"""
     
@@ -422,7 +439,7 @@ def detect(input_text, args, device=None, tokenizer=None, model=None):
                                         select_green_tokens=args.select_green_tokens, use_robdist= args.use_robdist, robdist_key = args.robdist_key, robdist_n = args.robdist_n, robdist_pval = args.p_val,
                                         model=model,
                                         prompt=args.default_prompt,
-                                        sweet_threshold=args.sweet_threshold)
+                                        sweet_threshold=args.sweet_threshold, unigram_detector= unigram_detector)
     if len(input_text)-1 > watermark_detector.min_prefix_len:
         score_dict = watermark_detector.detect(input_text)
         # output = str_format_scores(score_dict, watermark_detector.z_threshold)
