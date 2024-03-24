@@ -23,7 +23,7 @@ def plot_depth(overall_df, algos, args, result_dir):
         for perturbation, group in overall_df.groupby('Perturbation'):
             if perturbation != PERTURB_MAP[0][1]:
                 plt.plot(group['Number of Modifications'], group['TPR'], label=perturbation, color = colors[i])
-                plt.errorbar(x = group['Number of Modifications'], y = group['TPR'], yerr = [0] + list(np.random.uniform(0.01, 0.04, 5)), linestyle = None, color = colors[i])
+                plt.errorbar(x = group['Number of Modifications'], y = group['TPR'], linestyle = None, color = colors[i])
                 i += 1
         
         plt.xlim(0, 5)
