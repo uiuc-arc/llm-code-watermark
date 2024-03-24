@@ -1,9 +1,6 @@
 from lmw.demo_watermark import load_model, generate, detect, parse_args, load_tokenizer_device
 import program_perturb_cst
 from lmw.watermark_processor import GPTWatermarkDetector
-from mxeval.data import read_problems, stream_jsonl, write_jsonl, get_metadata, get_data
-from mxeval.evaluation import evaluate_functional_correctness
-import json
 import os
 from run_watermark import get_value_from_tuple_list, get_datafile
 from pprint import pprint
@@ -14,7 +11,6 @@ import astor
 import random
 import nltk
 import scipy
-import time
 
 def get_individual_function_lst(input_string):
     code_list = re.split(r'\n(?=def\s)', input_string)
