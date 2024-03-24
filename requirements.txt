@@ -136,3 +136,10 @@ websockets==11.0.3
 wget==3.2
 xxhash==3.4.1
 yarl==1.9.2
+nltk
+transformers
+tokenizers
+scipy
+gradio
+huggingface_hub
+safetensors
