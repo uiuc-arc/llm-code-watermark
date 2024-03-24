@@ -38,7 +38,7 @@ class WatermarkBase:
     def __init__(
         self,
         vocab: list[int] = None,
-        gamma: float = 0.5,
+        gamma: float = 0.25,
         delta: float = 2.0,
         seeding_scheme: str = "simple_1",  # mostly unused/always default
         hash_key: int = 15485863,  # just a large prime number to create a rng seed with sufficient bit width
@@ -75,7 +75,6 @@ class WatermarkBase:
         # seed the rng using the previous tokens/prefix
         # according to the seeding_scheme
         self._seed_rng(input_ids)
-
         greenlist_size = int(self.vocab_size * self.gamma)
         vocab_permutation = torch.randperm(self.vocab_size, device=input_ids.device, generator=self.rng)
         if self.select_green_tokens: # directly
@@ -299,7 +298,6 @@ class WatermarkDetector(WatermarkBase):
 
         return score_dict
 
-  
     def detect(
         self,
         text: str = None,

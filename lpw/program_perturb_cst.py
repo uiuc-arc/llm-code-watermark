@@ -14,27 +14,24 @@ import astor
 import random
 import itertools
 import multiprocessing
-
-# from human_eval.data import write_jsonl, read_problems
+import nltk
+from nltk.corpus import wordnet
+import re
+import keyword
 from mxeval.data import write_jsonl, read_problems, get_data
+WORDS = list(wordnet.all_synsets())
 
-
-
-def find_comments_in_code(og_code):
-   module = cst.parse_module(og_code)
-
-  # Define a visitor to collect comments
-   class CommentCollector(cst.CSTVisitor):
-      def __init__(self):
-          self.comments = 0
-
-      def visit_Comment(self, node):
-          self.comments += 1
-          
-
-   collector = CommentCollector()
-   module.visit(collector)
-   return collector.comments != 0
+def generate_random_identifier(psi = 5):
+   i = 0
+   identifier = []
+   while i < psi:
+      word = random.choice(WORDS).lemmas()[0].name()
+      if (i == 0 and (not word[0].islower() or word in keyword.kwlist)) or re.search(r'[^a-zA-Z0-9]', word):
+        continue 
+      identifier.append(word)
+      i += 1
+   return '_'.join(identifier)
+   
 
 def remove_comments(og_code):
 
@@ -46,9 +43,43 @@ def remove_comments(og_code):
   module.visit(CommentRemover())
   return module.code
 
+def t_remove_comments(module, uid = 1, psi = 5):
+   
+   
+   class CommentCollector(cst.CSTVisitor):
+      def __init__(self):
+          self.comments = 0
 
+      def visit_Comment(self, node):
+          self.comments += 1
+   
+   class CommentRemover(cst.CSTTransformer):
+      def __init__(self, choice):
+          self.count = 0
+          self.choice = choice
+      
+      def leave_Comment(self, original_node, updated_node):
+          if self.count == self.choice:
+            return cst.RemoveFromParent()
+          self.count += 1
+          return updated_node
+    
+   collector = CommentCollector()  
+   module.visit(collector)
+   
+   if not collector.comments:
+      return False, module.code
+   
+   choice = random.randrange(0, collector.comments)
+   
+   module.visit(CommentRemover(choice))
+   
+   return True, module.code
+          
 
-def t_rename_variable_in_iterator(module, uid = 1):
+   
+
+def t_rename_variable_in_iterator(module, uid = 1, psi = 5):
   class VariableVisitor(cst.CSTVisitor):
     def __init__(self):
        self.iter_vars = []
@@ -80,7 +111,7 @@ def t_rename_variable_in_iterator(module, uid = 1):
     def _rename_loop_variables(self, node):
       updated_node = node
       if hasattr(node, "target") and isinstance(node.target, cst.Name) and node.target.value == self.selection:
-          updated_node = node.with_changes(target=cst.Name(f"REPLACEME{self.uid}"))
+          updated_node = node.with_changes(target=cst.Name(generate_random_identifier(psi)))
 
       return updated_node.visit(VariableReferenceRenamer(self.selection))
     
@@ -96,7 +127,7 @@ def t_rename_variable_in_iterator(module, uid = 1):
 
     def leave_Name(self, original_node, updated_node):
         if updated_node.value == self.selection:
-            return updated_node.with_changes(value= f"REPLACEME{self.uid}")
+            return updated_node.with_changes(value= generate_random_identifier(psi))
         return updated_node
   
   visitor = VariableVisitor()
@@ -114,7 +145,7 @@ def t_rename_variable_in_iterator(module, uid = 1):
 
     
 
-def t_rename_parameters(module, uid=1):
+def t_rename_parameters(module, uid=1, psi = 5):
   class FunctionParameterCollector(cst.CSTVisitor):
     def __init__(self):
         self.function_parameters = {}
@@ -135,13 +166,13 @@ def t_rename_parameters(module, uid=1):
       
       def leave_Param(self, node: cst.Param, updated_node: cst.Name) -> cst.Param:
         if updated_node.name.value == self.selection:
-             return updated_node.with_changes(value= f"REPLACEME{self.uid}")
+             return updated_node.with_changes(value= generate_random_identifier(psi))
         return updated_node
       
       
       def leave_Name(self, node: cst.Name, updated_node: cst.Name) -> cst.CSTNode:
         if updated_node.value == self.selection:
-          return updated_node.with_changes(value= f"REPLACEME{self.uid}")
+          return updated_node.with_changes(value= generate_random_identifier(psi))
         
         return updated_node
 
@@ -155,20 +186,15 @@ def t_rename_parameters(module, uid=1):
     return False, module.code
   
   selection = random.choice(params)
-
-  
   transformer = ParameterNameReplacer(selection)
-
   module = module.visit(transformer)
-
-
   return True, module.code
   
 
 
 
 
-def t_rename_local_variables(module, uid=1):
+def t_rename_local_variables(module, uid=1, psi = 5):
   
   class FunctionParameterCollector(cst.CSTVisitor):
     def __init__(self):
@@ -204,7 +230,7 @@ def t_rename_local_variables(module, uid=1):
       def leave_Name(self, node: cst.Name, updated_node: cst.Name) -> cst.CSTNode:
 
         if updated_node.value == self.selection:
-          return updated_node.with_changes(value= f"REPLACEME{self.uid}")
+          return updated_node.with_changes(value= generate_random_identifier(psi))
         
         return updated_node
   
@@ -220,19 +246,12 @@ def t_rename_local_variables(module, uid=1):
      return False, module.code
 
   selection = random.choice(list(visitor.names))
-
-  
   transformer = VariableNameReplacer(selection)
-
   module = module.visit(transformer)
-
-
   return True, module.code
 
 
-
-
-def t_unroll_whiles(module, uid=1):
+def t_unroll_whiles(module, uid=1, psi = 5):
   
   the_ast = ast.parse(module.code)
 
@@ -280,7 +299,7 @@ def t_unroll_whiles(module, uid=1):
 
 
 
-def t_wrap_try_catch(module, uid=1):
+def t_wrap_try_catch(module, uid=1, psi = 5):
   if len(module.body) == 0:
     return False, module.code
 
@@ -310,7 +329,7 @@ def t_wrap_try_catch(module, uid=1):
               handlers=[
                   cst.ExceptHandler(
                       body= cst.IndentedBlock([
-                            cst.parse_module(f"REPLACEME{self.uid} = 1 \n")
+                            cst.parse_module(f"{generate_random_identifier(psi)} = {random.random()} \n")
                         ])
                     )
                 ]
@@ -332,7 +351,7 @@ def t_wrap_try_catch(module, uid=1):
 
   return True, module.code
 
-def t_add_dead_code(module, uid=1):
+def t_add_dead_code(module, uid=1, psi = 5):
   if len(module.body) == 0:
     return False, module.code
 
@@ -354,14 +373,15 @@ def t_add_dead_code(module, uid=1):
       def leave_SimpleStatementLine(self, node: cst.Name, updated_node: cst.Name) -> cst.CSTNode:
           self.count += 1
           if self.count == self.selection:
-            new_code = cst.parse_module(f"""if False: \n  REPLACEME{self.uid} = 1""").body
-
+            identifier = generate_random_identifier(psi)
+            try:
+              new_code = cst.parse_module(f"""{identifier} = 1 \nif {identifier} != {identifier}: \n  {generate_random_identifier(psi)} = {random.random()}""").body
+            except:
+               import pdb;pdb.set_trace()
             return cst.FlattenSentinel([*new_code, updated_node])
-          
-
           return updated_node
       
-  
+
   visitor = SimpleStatementVisitor()
 
   module.visit(visitor)
@@ -379,7 +399,7 @@ def t_add_dead_code(module, uid=1):
   
 
 
-def t_insert_print_statements(module, uid=1):
+def t_insert_print_statements(module, uid=1, psi = 5):
   if len(module.body) == 0:
     return False, module.code
 
@@ -402,7 +422,7 @@ def t_insert_print_statements(module, uid=1):
       def leave_SimpleStatementLine(self, node: cst.Name, updated_node: cst.Name) -> cst.CSTNode:
           self.count += 1
           if self.count == self.selection:
-            new_code = cst.parse_module(f"print('REPLACEME{self.uid}')\n").body
+            new_code = cst.parse_module(f"print('{generate_random_identifier(psi)}')\n").body
             return cst.FlattenSentinel([updated_node, *new_code])
           return updated_node
       
@@ -418,8 +438,24 @@ def t_insert_print_statements(module, uid=1):
   module = module.visit(transformer)
   return True, module.code
 
+def t_random_transform(module, uid = 1, psi = 5):
+   i = random.randrange(0, 4)
+   if i == 0:
+      return t_insert_print_statements(module, uid, psi)
+   elif i == 1:
+      return t_add_dead_code(module, uid, psi)
+   elif i == 2:
+      j = random.randrange(0, 3)
+      if j == 0:
+        return t_rename_parameters(module, uid, psi)
+      elif j == 1:
+        return t_rename_variable_in_iterator(module, uid, psi)
+      else:
+        return t_rename_local_variables(module, uid, psi)
 
-def t_replace_true_false(module, uid=1):
+   return t_wrap_try_catch(module, uid, psi)
+
+def t_replace_true_false(module, uid=1, psi = 5):
   class BoolVisitCounter(cst.CSTVisitor):
       def __init__(self):
           self.count = 0
@@ -440,16 +476,16 @@ def t_replace_true_false(module, uid=1):
       def leave_Name(self, node: cst.Name, updated_node: cst.Name) -> cst.CSTNode:
           if node.value in {'True', 'False'}:
             self.count += 1
-          
           if self.count == self.selection:
             if updated_node.value == 'True':
-                expr = f"'REPLACEME{self.uid}' == 'REPLACEME{self.uid}'"
+                identifier = generate_random_identifier(psi)
+                expr = f"{identifier} == {identifier}"
                 self.count += 1
                 return cst.parse_expression(expr)
 
-                
             elif updated_node.value == 'False':
-              expr = f"'REPLACEME{self.uid}' != 'REPLACEME{self.uid}'"
+              identifier = generate_random_identifier(psi)
+              expr = f"{identifier} != {identifier}"
               self.count += 1
               return cst.parse_expression(expr)
 
@@ -471,15 +507,16 @@ def t_replace_true_false(module, uid=1):
 
 
 class t_seq(object):
-  def __init__(self, transforms):
+  def __init__(self, transforms, psi):
     self.transforms = transforms
+    self.psi = psi
   def __call__(self, the_ast):
     did_change = False
     cur_ast = the_ast
     for i,t in enumerate(self.transforms):
       
       cur_ast = cst.parse_module(cur_ast)
-      changed, cur_ast = t(cur_ast, i+1) 
+      changed, cur_ast = t(cur_ast, i+1, self.psi) 
       
       if changed:
         did_change = True
@@ -488,12 +525,11 @@ class t_seq(object):
 
 
 
-
-def t_identity(module, uid = 1):
+def t_identity(module, uid = 1, psi = 5):
   return True, module.code
 
 
-def perturb(og_code, int_id = None, depth = 1, samples = 1):
+def perturb(og_code, int_id = None, depth = 1, samples = 1, psi = 5):
     transforms = []
     DEPTH = depth
     NUM_SAMPLES = samples
@@ -502,12 +538,10 @@ def perturb(og_code, int_id = None, depth = 1, samples = 1):
       the_seq = []
       for i in range(DEPTH):
         if int_id == None:
-          int_id = random.randint(1, 8)
+          int_id = random.randint(1, 7)
         if int_id == 0:
           the_seq.append(t_identity)
         if int_id == 1:
-          if 'True' not in og_code and 'False' not in og_code:
-             the_seq.append(t_add_dead_code)
           the_seq.append(t_replace_true_false)
         elif int_id == 2:
           if i % 3 == 0:
@@ -517,21 +551,17 @@ def perturb(og_code, int_id = None, depth = 1, samples = 1):
           else:
             the_seq.append(t_rename_local_variables)
         elif int_id == 3:
-          the_seq.append(t_rename_parameters)
+          the_seq.append(t_add_dead_code)
         elif int_id == 4:
-          the_seq.append(t_rename_parameters)
+          the_seq.append(t_unroll_whiles)
         elif int_id == 5:
           the_seq.append(t_insert_print_statements)
         elif int_id == 6:
-          the_seq.append(t_add_dead_code)
-        elif int_id == 7:
-          if 'while' not in og_code:
-             the_seq.append(t_add_dead_code)
-          the_seq.append(t_unroll_whiles)
-        elif int_id == 8:
           the_seq.append(t_wrap_try_catch)
+        elif int_id == 7:
+          the_seq.append(t_random_transform)
 
-      transforms.append(('depth-{}-sample-{}'.format(DEPTH, s+1), t_seq(the_seq), the_seq))
+      transforms.append(('depth-{}-sample-{}'.format(DEPTH, s+1), t_seq(the_seq, psi), the_seq))
       
     results = []
     for t_name, t_func, the_seq in transforms:
@@ -542,23 +572,20 @@ def perturb(og_code, int_id = None, depth = 1, samples = 1):
             traceback.print_exc()
             results.append({'changed': False, 't_name': t_name, 'the_seq': the_seq, 'result': og_code})
             continue
-        
         try:
            cst.parse_module(og_code)
         except:
            og_code = astor.to_source(ast.parse(og_code))
 
         changed, result = t_func(og_code)
-
         results.append({'changed': changed, 't_name': t_name, 'the_seq': the_seq, 'result': result})
     return results
 
 
 if __name__ == "__main__":
     problems = get_data()
-    n = 150
+    n = len(problems)
     keys = list(problems.keys())[:n]
-
     for i in range(n):
         og_code = problems[keys[i]]['prompt'] + problems[keys[i]]['canonical_solution']
         res = perturb(og_code)
