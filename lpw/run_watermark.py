@@ -6,6 +6,7 @@ from mxeval.data import read_problems, stream_jsonl, write_jsonl, get_metadata, 
 from mxeval.evaluation import evaluate_functional_correctness
 from pprint import pprint
 import gc
+import re
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 from lmw.watermark_processor import GPTWatermarkDetector
 
@@ -26,6 +27,18 @@ def get_value_from_tuple_list(lst, key):
         if item[0] == key:
             return item[1]
     return 0
+
+def adjust_starting_spaces(input_string, target_spaces=3):
+    current_spaces = len(input_string) - len(input_string.lstrip(' '))
+    if current_spaces < target_spaces:
+        spaces_to_add = target_spaces - current_spaces
+        adjusted_string = ' ' * spaces_to_add + input_string
+    elif current_spaces > target_spaces:
+        spaces_to_remove = current_spaces - target_spaces
+        adjusted_string = input_string[spaces_to_remove:]
+    else:
+        adjusted_string = input_string
+    return adjusted_string
 
 
 
@@ -69,8 +82,9 @@ def main(args, result_dir, num_samples_per_task = 1):
 
             _, _, standard_output, watermarked_output, _ = generate(prompt, args, model=model, device=device, tokenizer=tokenizer)
             
-            watermarked_output= filter_code(fix_indents(watermarked_output))
-            standard_output= filter_code(fix_indents(standard_output))
+            watermarked_output= adjust_starting_spaces(filter_code(fix_indents(watermarked_output)))
+            standard_output= adjust_starting_spaces(filter_code(fix_indents(standard_output)))
+            
             watermarked_completions.append(watermarked_output)
             standard_completions.append(standard_output)
 
@@ -113,7 +127,7 @@ def main(args, result_dir, num_samples_per_task = 1):
             without_watermark_detection_result_lst.append(without_watermark_detection_result)
 
             print("#"*term_width)
-            print("Output without watermark:")
+            print("Output with watermark:")
             print(watermarked_output)
             print("-"*term_width)
             print(f"Detection result @ {args.detection_z_threshold}:")
@@ -121,7 +135,7 @@ def main(args, result_dir, num_samples_per_task = 1):
             print("-"*term_width)
 
             print("#"*term_width)
-            print("Output with watermark:")
+            print("Output without watermark:")
             print(standard_output)
             print("-"*term_width)
             print(f"Detection result @ {args.detection_z_threshold}:")
@@ -188,13 +202,13 @@ if __name__ == "__main__":
     print(args)
     sz = args.model_size if not args.use_codellama else f'CodeLlama{args.model_size}'
     if args.use_robdist:
-        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/robdist/original/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/{args.gamma}/robdist/original/'
     elif args.sweet_threshold:
-        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/sweet/original/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/{args.gamma}/sweet/original/'
     elif args.use_unigram:
-        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/unigram/original/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/{args.gamma}/unigram/original/'
     else:
-        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/vanilla/original/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/{args.gamma}/vanilla/original/'
 
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
     world_size = int(os.environ.get("WORLD_SIZE", -1))

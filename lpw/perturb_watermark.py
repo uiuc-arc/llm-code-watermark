@@ -12,6 +12,9 @@ import libcst as cst
 import ast
 import astor
 import random
+import nltk
+import scipy
+import time
 
 def get_individual_function_lst(input_string):
     code_list = re.split(r'\n(?=def\s)', input_string)
@@ -36,8 +39,7 @@ def get_completion(output):
     # Remove empty lines
     completion = "\n".join([line for line in completion.splitlines() if line.strip()])
     completion = completion.strip()
-    return completion
-
+    return f"   {completion}"
 
 
 def main(args, result_dir):
@@ -60,139 +62,205 @@ def main(args, result_dir):
 
     unigram_detector = None if not args.use_unigram else GPTWatermarkDetector(fraction=args.unigram_fraction, strength=args.unigram_strength, vocab_size= tokenizer.vocab_size, watermark_key=args.unigram_wm_key)
 
-    for perturbation_id in list(map(int, args.perturbation_ids.split())):
-        true_positive, false_positive = 0, 0
-        decoded_output_with_watermark_lst, decoded_output_without_watermark_lst, with_watermark_detection_result_lst, without_watermark_detection_result_lst = [], [], [], []
-        watermarked_perturbation, standard_perturbation = None, None
-        fraction_green = []
+    ids_cached = [0]
 
-        prop16 = 0
-        tottoks = 0
-        
-        for i in range(args.num_codes):
-            print("#"*term_width)
-            watermarked_output = ""
-            standard_output = ""
-            j = 0
-            while j < args.num_prompts:
-                idx = random.randrange(0, len(watermarked_samples))
-                try:
-                    exec(watermarked_samples[idx])
-                    exec(nonwatermarked_samples[idx])
+    for depth in list(map(int, args.depths.split())):
+        for psi in list(map(int, args.psis.split())):
+            for perturbation_id in list(map(int, args.perturbation_ids.split())):
+                true_positive, false_positive = 0, 0
+                decoded_output_with_watermark_lst, decoded_output_without_watermark_lst, with_watermark_detection_result_lst, without_watermark_detection_result_lst = [], [], [], []
+                watermarked_perturbation, standard_perturbation = None, None
+                fraction_green = []
+                comments_set = set()
+                prop16 = 0
+                tottoks = 0
+                res_lst = []
+                p_vals = []
+                ytrue = []
+                ypred = []
+                changed = []
+                green_changed = []
 
-                except:
-                    continue
-                individual_function = watermarked_samples[idx]
-                individual_function = re.sub(r'#.*', '', individual_function)
-                if get_completion(individual_function) == "":
-                    continue
-                watermarked_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth= 3, samples= 1)[-1]
+                k = 1
+                for i in range(args.num_codes):
+                    print("#"*term_width)
+                    watermarked_output = ""
+                    standard_output = ""
+                    unperturbed_output = ""
+                    j = 0
+                    while j < args.num_prompts:
+                        if not ids_cached[0]:
+                            idx = random.randrange(0, len(watermarked_samples))
+                        else:
+                            idx = ids_cached[k]
+                        
+                        try:
+                            exec(watermarked_samples[idx])
 
-                individual_function = nonwatermarked_samples[i]
-                individual_function = re.sub(r'#.*', '', individual_function)
+                        except:
+                            individual_watermarked = watermarked_samples[idx]
+                            individual_watermarked = re.sub(r'#.*', '', individual_watermarked)
+                            comments_set.add(get_completion(individual_watermarked))
+                            
+                            continue
+                        try:
+                            exec(nonwatermarked_samples[idx])
+                        except:
+                            continue
+
+                        individual_watermarked = watermarked_samples[idx]
+                        
+                        
+                        unperturbed_output += individual_watermarked
+                        
+                        # if perturbation_id:
+                        #     import pdb;pdb.set_trace()
+                        exec(individual_watermarked)
+
+                        if get_completion(astor.to_source(ast.parse(individual_watermarked))) == '   ':
+                            
+                            continue
+
+                        watermarked_perturbation = program_perturb_cst.perturb(individual_watermarked, perturbation_id, depth= depth, samples= 1, psi = psi)[-1]
+                        
+
+
+                        
+                        individual_function = nonwatermarked_samples[idx]
+
+                        if get_completion(astor.to_source(ast.parse(individual_function)))  == '   ':
+                            continue
+
+                        standard_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth = depth, psi = psi)[-1]
+                        
+                        
+                        watermarked_output += watermarked_perturbation['result']
+                        standard_output += standard_perturbation['result']
+                        j += 1
+                        if not ids_cached[0]:
+                            ids_cached.append(idx)
+                        k += 1
+
+                    unperturbed_detection_result = detect(get_completion(unperturbed_output), args, device=device, tokenizer=tokenizer, unigram_detector= unigram_detector)
+                    unperturbed_z_score = float(get_value_from_tuple_list(unperturbed_detection_result[0], 'z-score'))
+
+                    try:
+                        with_watermark_detection_result = detect(get_completion(watermarked_output), args, device=device, tokenizer=tokenizer, unigram_detector= unigram_detector)
+                    except:
+                        import pdb;pdb.set_trace()
+                    
+                    watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
+                    p_vals.append(scipy.stats.norm.sf(float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))))
+
+
+                    res_lst.append({'Total Before': get_value_from_tuple_list(unperturbed_detection_result[0], 'Tokens Counted (T)'), 'Total After':  get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)'), 'Green Before': get_value_from_tuple_list(unperturbed_detection_result[0], '# Tokens in Greenlist') , 'Green After':  get_value_from_tuple_list(with_watermark_detection_result[0], '# Tokens in Greenlist')})
+                    changed.append(abs(float(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)')) - float(get_value_from_tuple_list(unperturbed_detection_result[0], 'Tokens Counted (T)')))/(float(get_value_from_tuple_list(unperturbed_detection_result[0], 'Tokens Counted (T)'))))
+                    green_changed.append(abs(float(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)')) - float(get_value_from_tuple_list(unperturbed_detection_result[0], 'Tokens Counted (T)')))/(float(get_value_from_tuple_list(unperturbed_detection_result[0], 'Tokens Counted (T)'))))
+
+                    tmp = int(float(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)')))
+                    if tmp < 16:
+                        prop16 += 1
+                    tottoks += tmp
+                    fraction_green.append(float(get_value_from_tuple_list(with_watermark_detection_result[0], '# Tokens in Greenlist'))/ float(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)')))
+
+                    print('Watermarked_z_score:', watermarked_z_score)
+                    ytrue.append(1)
+                    if watermarked_z_score > args.detection_z_threshold:
+                        true_positive += 1
+                        print("True positive!")
+                        ypred.append(1)
+                    else:
+                        print("False negative!")
+                        ypred.append(0)
+                    
+                    try:
+                        without_watermark_detection_result = detect(get_completion(standard_output), 
+                                                                    args, 
+                                                                    device=device, 
+                                                                    tokenizer=tokenizer, unigram_detector= unigram_detector)
+                    except:
+                        import pdb;pdb.set_trace()
+                    
+                    nonwatermarked_z_score = float(get_value_from_tuple_list(without_watermark_detection_result[0], 'z-score'))
+
+                    print('Nonwatermarked_z_score:', nonwatermarked_z_score)
+                    ytrue.append(0)
+                    if nonwatermarked_z_score > args.detection_z_threshold:
+                        false_positive += 1
+                        print("False positive!")
+                        ypred.append(1)
+                    else:
+                        print("True negative!")
+                        ypred.append(0)
+
+                    decoded_output_without_watermark_lst.append(watermarked_output)
+                    decoded_output_with_watermark_lst.append(standard_output)
+
+
+                    with_watermark_detection_result_lst.append(with_watermark_detection_result)
+                    without_watermark_detection_result_lst.append(without_watermark_detection_result)
+
+                    print("#"*term_width)
+                    print("Output without watermark:")
+                    print(watermarked_output)
+                    print("-"*term_width)
+                    print(f"Detection result @ {args.detection_z_threshold}:")
+                    pprint(without_watermark_detection_result)
+                    print("-"*term_width)
+
+                    print("#"*term_width)
+                    print("Output with watermark:")
+                    print(standard_output)
+                    print("-"*term_width)
+                    print(f"Detection result @ {args.detection_z_threshold}:")
+                    pprint(with_watermark_detection_result)
+                    print("-"*term_width)
+
+                ids_cached[0] = 1
+                perturbed_result_dir = result_dir + str(args.num_prompts) + '/' + re.search(r"<function\s+(.*?)\s+at", str(watermarked_perturbation['the_seq'][0])).group(1) + '/' + str(depth) + '/' + str(psi) + '/'
+                if not os.path.exists(perturbed_result_dir):
+                    os.makedirs(perturbed_result_dir)
+
+
+                print('True positives: ', true_positive, '/', args.num_codes)
+                print('False positives: ', false_positive, '/', args.num_codes)
+
+
+                print('Mean Proportion in greenlist: ', sum(fraction_green)/args.num_codes)
+
+
+                print('prop tokens < 16', prop16/args.num_codes)
+
+                print('mean tokens ', tottoks/args.num_codes)
+
+                # write results to file
+                with open(perturbed_result_dir+'watermarked_detections.txt', 'w') as f:
+                    f.writelines(str(with_watermark_detection_result_lst))
                 
-                if get_completion(individual_function) == "":
-                    continue
+                with open(perturbed_result_dir+'without_watermark_detections.txt', 'w') as f:
+                    f.writelines(str(without_watermark_detection_result_lst))
+
+                with open(perturbed_result_dir+'detection_results.txt', 'w') as f:
+                    f.write(str({'tpr': round(true_positive/args.num_codes, 3), 'fpr': round(false_positive/args.num_codes, 3), 'p-values': p_vals, 'ytrue': ytrue, 'ypred': ypred, 'mean_tokens': tottoks/args.num_codes, 'prop_tokens_changed': sum(changed)/args.num_codes, 'prop_green_changed': sum(green_changed)/args.num_codes}))
                 
-                standard_perturbation = program_perturb_cst.perturb(individual_function, perturbation_id, depth = 3)[-1]
-                watermarked_output += watermarked_perturbation['result']
-                standard_output += standard_perturbation['result']
-                j += 1
+                with open(perturbed_result_dir+'res.txt', 'w') as f:
+                    for dct in res_lst:
+                        f.write(str(dct) + '\n')
 
-
-            with_watermark_detection_result = detect(get_completion(watermarked_output), args, device=device, tokenizer=tokenizer, unigram_detector= unigram_detector)
-            watermarked_z_score = float(get_value_from_tuple_list(with_watermark_detection_result[0], 'z-score'))
-
-            tmp = int(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)'))
-            if tmp < 16:
-                prop16 += 1
-            tottoks += tmp
-            fraction_green.append(float(get_value_from_tuple_list(with_watermark_detection_result[0], '# Tokens in Greenlist'))/ float(get_value_from_tuple_list(with_watermark_detection_result[0], 'Tokens Counted (T)')))
-
-            print('Watermarked_z_score:', watermarked_z_score)
-            if watermarked_z_score > args.detection_z_threshold:
-                true_positive += 1
-                print("True positive!")
-            else:
-                print("False negative!")
-
-            without_watermark_detection_result = detect(get_completion(standard_output), 
-                                                        args, 
-                                                        device=device, 
-                                                        tokenizer=tokenizer, unigram_detector= unigram_detector)
-            
-            nonwatermarked_z_score = float(get_value_from_tuple_list(without_watermark_detection_result[0], 'z-score'))
-
-            print('Nonwatermarked_z_score:', nonwatermarked_z_score)
-            if nonwatermarked_z_score > args.detection_z_threshold:
-                false_positive += 1
-                print("False positive!")
-            else:
-                print("True negative!")
-
-            decoded_output_without_watermark_lst.append(watermarked_output)
-            decoded_output_with_watermark_lst.append(standard_output)
-
-
-            with_watermark_detection_result_lst.append(with_watermark_detection_result)
-            without_watermark_detection_result_lst.append(without_watermark_detection_result)
-
-            print("#"*term_width)
-            print("Output without watermark:")
-            print(watermarked_output)
-            print("-"*term_width)
-            print(f"Detection result @ {args.detection_z_threshold}:")
-            pprint(without_watermark_detection_result)
-            print("-"*term_width)
-
-            print("#"*term_width)
-            print("Output with watermark:")
-            print(standard_output)
-            print("-"*term_width)
-            print(f"Detection result @ {args.detection_z_threshold}:")
-            pprint(with_watermark_detection_result)
-            print("-"*term_width)
-
-        perturbed_result_dir = result_dir + str(args.num_prompts) + '/' + re.search(r"<function\s+(.*?)\s+at", str(watermarked_perturbation['the_seq'][0])).group(1) + '/'
-        if not os.path.exists(perturbed_result_dir):
-            os.makedirs(perturbed_result_dir)
-
-
-        print('True positives: ', true_positive, '/', args.num_codes)
-        print('False positives: ', false_positive, '/', args.num_codes)
-
-
-        print('Mean Proportion in greenlist: ', sum(fraction_green)/args.num_codes)
-
-
-        print('prop tokens < 16', prop16/args.num_codes)
-
-        print('mean tokens ', tottoks/args.num_codes)
-
-        # write results to file
-        with open(perturbed_result_dir+'watermarked_detections.txt', 'w') as f:
-            f.writelines(str(with_watermark_detection_result_lst))
-        
-        with open(perturbed_result_dir+'without_watermark_detections.txt', 'w') as f:
-            f.writelines(str(without_watermark_detection_result_lst))
-
-        with open(perturbed_result_dir+'true_positive_rate.txt', 'w') as f:
-            f.write(str(true_positive/args.num_codes))
-
-        with open(perturbed_result_dir+'false_positive_rate.txt', 'w') as f:
-            f.write(str(false_positive/args.num_codes))
+                with open(perturbed_result_dir+'number of skipped', 'w') as f:
+                    f.write(str(len(comments_set)))
 
 if __name__ == "__main__":
     args = parse_args()
-    print(args)
+    if args.download_wordnet:
+        nltk.download('wordnet')
     sz = args.model_size if not args.use_codellama else f'CodeLlama{args.model_size}'
     if args.use_robdist:
-        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/robdist/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/{args.gamma}/robdist/'
     elif args.sweet_threshold:
-        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/sweet/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/{args.gamma}/sweet/'
     elif args.use_unigram:
-        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/unigram/'
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/{args.gamma}/unigram/'
     else:
-        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}/vanilla/'
-
+        result_dir = f'results/watermarking/{sz}/{args.dataset}/{args.language}//{args.gamma}/vanilla/'
     main(args, result_dir)    
